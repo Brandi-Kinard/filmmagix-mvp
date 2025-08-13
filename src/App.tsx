@@ -37,6 +37,9 @@ export default function App() {
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
         <input
+          id="video-prompt"
+          name="videoPrompt"
+          type="text"
           style={{ flex: 1, padding: "10px 12px", borderRadius: 6, border: "1px solid #ddd" }}
           placeholder="Describe your video idea..."
           value={prompt}

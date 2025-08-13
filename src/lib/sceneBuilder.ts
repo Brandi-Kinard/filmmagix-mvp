@@ -1,9 +1,9 @@
-export type Scene = {
+export interface Scene {
   text: string;
   keywords: string[];
   durationSec: number;     // 4–6s beats, 4s hook/cta
   kind: "hook" | "beat" | "cta";
-};
+}
 
 export function buildScenes(raw: string, maxScenes = 12): Scene[] {
   const clean = (raw || "")
