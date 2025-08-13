@@ -1,34 +1,75 @@
 import { useState } from "react";
-import { buildScenes, Scene } from "./lib/sceneBuilder";
+import { assemblePlaceholder } from "./lib/ffmpegOrchestrator";
+
+// Temporary inline types and function to test
+interface Scene {
+  text: string;
+  keywords: string[];
+  durationSec: number;
+  kind: "hook" | "beat" | "cta";
+}
+
+function buildScenes(raw: string): Scene[] {
+  const clean = (raw || "").replace(/\s+/g, " ").trim();
+  if (!clean) return [];
+
+  const sentences = clean.split(/(?<=[.!?])\s+/).filter(Boolean).slice(0, 12);
+  
+  const scenes = sentences.map((s, i, arr) => {
+    const kind: Scene["kind"] = i === 0 ? "hook" : i === arr.length - 1 ? "cta" : "beat";
+    const durationSec = kind === "beat" ? 5 : 4;
+    return {
+      text: s,
+      keywords: [],
+      durationSec,
+      kind,
+    };
+  });
+
+  return scenes;
+}
 
 export default function App() {
   const [prompt, setPrompt] = useState("");
   const [scenes, setScenes] = useState<Scene[]>([]);
-  const [speaking, setSpeaking] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const onGenerate = () => {
     const text = prompt.trim();
     if (!text) return;
-    const sb = buildScenes(text);
-    setScenes(sb);
+    
+    try {
+      const generatedScenes = buildScenes(text);
+      setScenes(generatedScenes);
+      console.log("Generated scenes:", generatedScenes);
+    } catch (error) {
+      console.error("Error generating scenes:", error);
+    }
   };
 
-  const speakStoryboard = async () => {
-    if (!scenes.length) return;
-    const synth = window.speechSynthesis;
-    if (!synth) {
-      alert("Speech Synthesis not supported in this browser.");
-      return;
+  const onExportMP4 = async () => {
+    setExporting(true);
+    try {
+      console.log("Starting MP4 export...");
+      const videoBlob = await assemblePlaceholder();
+      
+      // Create download link
+      const url = URL.createObjectURL(videoBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'filmMagix-placeholder.mp4';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      console.log("MP4 export completed");
+    } catch (error) {
+      console.error("Error exporting MP4:", error);
+      alert("Failed to export MP4. Check console for details.");
+    } finally {
+      setExporting(false);
     }
-    setSpeaking(true);
-    // Speak the whole storyboard as one VO for now
-    const utter = new SpeechSynthesisUtterance(
-      scenes.map(s => s.text).join(" ")
-    );
-    utter.rate = 1.0; utter.pitch = 1.0; utter.volume = 1.0;
-    utter.onend = () => setSpeaking(false);
-    synth.cancel();
-    synth.speak(utter);
   };
 
   return (
@@ -53,35 +94,33 @@ export default function App() {
         </button>
       </div>
 
+      <p>Scenes generated: {scenes.length}</p>
+      
       {scenes.length > 0 && (
-        <>
-          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
+            <h3 style={{ margin: 0 }}>Preview:</h3>
             <button
-              onClick={speakStoryboard}
-              disabled={speaking}
-              style={{ padding: "8px 12px", borderRadius: 6, border: "1px solid #ddd", background: speaking ? "#eee" : "#fff" }}
+              onClick={onExportMP4}
+              disabled={exporting}
+              style={{ 
+                padding: "8px 12px", 
+                borderRadius: 6, 
+                border: "1px solid #ddd", 
+                background: exporting ? "#eee" : "#fff",
+                cursor: exporting ? "not-allowed" : "pointer",
+                fontSize: "14px"
+              }}
             >
-              {speaking ? "Speaking…" : "Preview Voiceover"}
+              {exporting ? "Exporting..." : "Export Placeholder MP4"}
             </button>
-            <div style={{ fontSize: 13, color: "#667" }}>
-              {scenes.length} scenes · ~{scenes.reduce((a, s) => a + s.durationSec, 0)}s total
-            </div>
           </div>
-
-          <ol style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 8 }}>
-            {scenes.map((s, i) => (
-              <li key={i} style={{ padding: 12, border: "1px solid #eee", borderRadius: 8, background: "#fafafa" }}>
-                <div style={{ fontSize: 12, color: "#777", marginBottom: 6 }}>
-                  {s.kind.toUpperCase()} · {s.durationSec}s
-                </div>
-                <div style={{ fontWeight: 600 }}>{s.text}</div>
-                <div style={{ fontSize: 12, color: "#777", marginTop: 6 }}>
-                  keywords: {s.keywords.join(", ") || "—"}
-                </div>
-              </li>
-            ))}
-          </ol>
-        </>
+          {scenes.map((scene, i) => (
+            <div key={i} style={{ padding: 8, margin: "4px 0", background: "#f5f5f5", borderRadius: 4 }}>
+              <strong>{scene.kind.toUpperCase()}</strong>: {scene.text}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
