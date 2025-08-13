@@ -51,7 +51,12 @@ export default function App() {
     setExporting(true);
     try {
       console.log("Starting MP4 export...");
+      
+      // Show progress in console
+      console.log("Step 1: Initializing FFmpeg...");
       const videoBlob = await assemblePlaceholder();
+      
+      console.log("Step 2: Creating download...");
       
       // Create download link
       const url = URL.createObjectURL(videoBlob);
@@ -63,11 +68,33 @@ export default function App() {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       
-      console.log("MP4 export completed");
+      console.log("Step 3: MP4 export completed successfully!");
+      console.log("File size:", videoBlob.size, "bytes");
+      
     } catch (error) {
       console.error("Error exporting MP4:", error);
-      alert("Failed to export MP4. Check console for details.");
+      
+      // More specific error messages
+      let errorMessage = "Failed to export MP4. ";
+      if (error instanceof Error) {
+        if (error.message.includes('timeout')) {
+          errorMessage += "The process timed out. Please check your internet connection and try again.";
+        } else if (error.message.includes('fetch') || error.message.includes('download')) {
+          errorMessage += "Could not download FFmpeg core files. Please check your internet connection.";
+        } else if (error.message.includes('CORS')) {
+          errorMessage += "Browser security error. Try refreshing the page.";
+        } else {
+          errorMessage += error.message;
+        }
+      } else {
+        errorMessage += "Unknown error occurred. Check browser console for details.";
+      }
+      
+      alert(errorMessage);
+      
     } finally {
+      // Always reset the button state
+      console.log("Resetting export button state");
       setExporting(false);
     }
   };
