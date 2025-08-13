@@ -50,31 +50,51 @@ async function loadFFmpegCore(): Promise<FFmpeg> {
   try {
     log('Creating blob URLs for FFmpeg core files...');
     
-    // Use the exact core version that matches our ffmpeg version
-    const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist';
+    // Use the correct URLs that match @ffmpeg/ffmpeg@0.12.15
+    // The core files are distributed in the umd directory
+    const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
     
     log(`Loading from: ${baseURL}`);
     log(`Core JS URL: ${baseURL}/ffmpeg-core.js`);
     log(`Core WASM URL: ${baseURL}/ffmpeg-core.wasm`);
     
+    // Test if URLs are accessible first
+    log('Testing URL accessibility...');
+    try {
+      const testResponse = await fetch(`${baseURL}/ffmpeg-core.js`, { method: 'HEAD' });
+      log('Core JS HEAD request status:', testResponse.status);
+      if (!testResponse.ok) {
+        throw new Error(`Core JS not accessible: ${testResponse.status}`);
+      }
+    } catch (headError) {
+      logError('Failed to access core JS file', headError);
+      throw new Error('Cannot access FFmpeg core files from CDN');
+    }
+
     const [coreURL, wasmURL] = await Promise.all([
       toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript').then(url => {
         log('Core JS blob URL created:', url.substring(0, 50) + '...');
         return url;
+      }).catch(error => {
+        logError('Failed to create JS blob URL', error);
+        throw error;
       }),
       toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm').then(url => {
         log('Core WASM blob URL created:', url.substring(0, 50) + '...');
         return url;
+      }).catch(error => {
+        logError('Failed to create WASM blob URL', error);
+        throw error;
       })
     ]);
 
-    log('Starting FFmpeg core load with 15 second timeout...');
+    log('Starting FFmpeg core load with 30 second timeout...');
     
-    // Create a timeout promise
+    // Create a timeout promise with longer timeout for first load
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => {
-        reject(new Error('FFmpeg load timeout after 15 seconds'));
-      }, 15000);
+        reject(new Error('FFmpeg load timeout after 30 seconds'));
+      }, 30000);
     });
 
     // Race the load against the timeout
@@ -96,15 +116,17 @@ async function loadFFmpegCore(): Promise<FFmpeg> {
     // Provide specific error messages
     if (error instanceof Error) {
       if (error.message.includes('timeout')) {
-        throw new Error('FFmpeg loading timed out. Please check your internet connection and try again.');
-      } else if (error.message.includes('fetch')) {
-        throw new Error('Failed to download FFmpeg core files. Please check your internet connection.');
+        throw new Error('FFmpeg loading timed out. The files are large (~3MB). Please wait and try again.');
+      } else if (error.message.includes('fetch') || error.message.includes('network') || error.message.includes('Failed to fetch')) {
+        throw new Error('Network error downloading FFmpeg core. Please check your internet connection and try again.');
       } else if (error.message.includes('CORS')) {
-        throw new Error('CORS error loading FFmpeg core. This may be a browser security issue.');
+        throw new Error('Browser security (CORS) error. Try refreshing the page.');
+      } else if (error.message.includes('not accessible')) {
+        throw new Error('FFmpeg core files not available from CDN. Please try again later.');
       }
     }
     
-    throw new Error(`Failed to initialize FFmpeg: ${error}`);
+    throw new Error(`FFmpeg initialization failed: ${error}`);
   }
 }
 
