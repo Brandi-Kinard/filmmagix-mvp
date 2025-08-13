@@ -51,59 +51,107 @@ async function loadFFmpegCore(): Promise<FFmpeg> {
     log('Creating blob URLs for FFmpeg core files...');
     
     // Use the correct URLs that match @ffmpeg/ffmpeg@0.12.15
-    // The core files are distributed in the umd directory
     const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
     
     log(`Loading from: ${baseURL}`);
     log(`Core JS URL: ${baseURL}/ffmpeg-core.js`);
     log(`Core WASM URL: ${baseURL}/ffmpeg-core.wasm`);
     
-    // Test if URLs are accessible first
-    log('Testing URL accessibility...');
-    try {
-      const testResponse = await fetch(`${baseURL}/ffmpeg-core.js`, { method: 'HEAD' });
-      log('Core JS HEAD request status:', testResponse.status);
-      if (!testResponse.ok) {
-        throw new Error(`Core JS not accessible: ${testResponse.status}`);
+    // Pre-download the files with progress tracking
+    log('Starting file downloads with progress tracking...');
+    
+    const downloadWithProgress = async (url: string, description: string) => {
+      log(`Downloading ${description}...`);
+      const startTime = Date.now();
+      
+      try {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const contentLength = response.headers.get('content-length');
+        const total = contentLength ? parseInt(contentLength, 10) : 0;
+        log(`${description} size: ${Math.round(total / 1024)}KB`);
+        
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error('No response body');
+        
+        const chunks: Uint8Array[] = [];
+        let downloaded = 0;
+        let lastProgress = 0;
+        
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          chunks.push(value);
+          downloaded += value.length;
+          
+          if (total > 0) {
+            const progress = Math.round((downloaded / total) * 100);
+            if (progress >= lastProgress + 10) { // Log every 10%
+              log(`${description} download: ${progress}% (${Math.round(downloaded / 1024)}KB)`);
+              lastProgress = progress;
+            }
+          }
+        }
+        
+        const elapsed = Date.now() - startTime;
+        log(`${description} downloaded successfully in ${elapsed}ms`);
+        
+        // Concatenate all chunks into a single Uint8Array
+        const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
+        const result = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const chunk of chunks) {
+          result.set(chunk, offset);
+          offset += chunk.length;
+        }
+        
+        return result;
+      } catch (error) {
+        logError(`Failed to download ${description}`, error);
+        throw error;
       }
-    } catch (headError) {
-      logError('Failed to access core JS file', headError);
-      throw new Error('Cannot access FFmpeg core files from CDN');
-    }
+    };
 
+    // Download both files in parallel
+    const [jsData, wasmData] = await Promise.all([
+      downloadWithProgress(`${baseURL}/ffmpeg-core.js`, 'Core JS'),
+      downloadWithProgress(`${baseURL}/ffmpeg-core.wasm`, 'Core WASM')
+    ]);
+
+    log('Converting downloaded files to blob URLs...');
     const [coreURL, wasmURL] = await Promise.all([
-      toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript').then(url => {
+      toBlobURL(new Blob([jsData], { type: 'text/javascript' }), 'text/javascript').then(url => {
         log('Core JS blob URL created:', url.substring(0, 50) + '...');
         return url;
-      }).catch(error => {
-        logError('Failed to create JS blob URL', error);
-        throw error;
       }),
-      toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm').then(url => {
+      toBlobURL(new Blob([wasmData], { type: 'application/wasm' }), 'application/wasm').then(url => {
         log('Core WASM blob URL created:', url.substring(0, 50) + '...');
         return url;
-      }).catch(error => {
-        logError('Failed to create WASM blob URL', error);
-        throw error;
       })
     ]);
 
-    log('Starting FFmpeg core load with 30 second timeout...');
+    log('Starting FFmpeg core initialization with 60 second timeout...');
     
-    // Create a timeout promise with longer timeout for first load
+    // Create a timeout promise with much longer timeout
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => {
-        reject(new Error('FFmpeg load timeout after 30 seconds'));
-      }, 30000);
+        reject(new Error('FFmpeg initialization timeout after 60 seconds'));
+      }, 60000);
     });
 
     // Race the load against the timeout
+    const loadStartTime = Date.now();
     await Promise.race([
       ffmpeg.load({ coreURL, wasmURL }),
       timeoutPromise
     ]);
 
-    log('FFmpeg loaded successfully!');
+    const loadTime = Date.now() - loadStartTime;
+    log(`FFmpeg loaded successfully in ${loadTime}ms!`);
     ffmpegInstance = ffmpeg;
     loadPromise = null; // Clear the loading promise
     
@@ -116,13 +164,13 @@ async function loadFFmpegCore(): Promise<FFmpeg> {
     // Provide specific error messages
     if (error instanceof Error) {
       if (error.message.includes('timeout')) {
-        throw new Error('FFmpeg loading timed out. The files are large (~3MB). Please wait and try again.');
+        throw new Error('FFmpeg loading is taking longer than expected. This may be due to a slow internet connection. Please ensure you have a stable connection and try again.');
       } else if (error.message.includes('fetch') || error.message.includes('network') || error.message.includes('Failed to fetch')) {
-        throw new Error('Network error downloading FFmpeg core. Please check your internet connection and try again.');
+        throw new Error('Network error downloading FFmpeg core files. Please check your internet connection and try again.');
+      } else if (error.message.includes('HTTP')) {
+        throw new Error(`Server error: ${error.message}. Please try again later.`);
       } else if (error.message.includes('CORS')) {
         throw new Error('Browser security (CORS) error. Try refreshing the page.');
-      } else if (error.message.includes('not accessible')) {
-        throw new Error('FFmpeg core files not available from CDN. Please try again later.');
       }
     }
     
@@ -166,6 +214,7 @@ export async function assemblePlaceholder(): Promise<Blob> {
     log('FFmpeg command:', ffmpegArgs.join(' '));
     
     // Execute with timeout
+    const execStartTime = Date.now();
     const execPromise = ffmpeg.exec(ffmpegArgs);
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => {
@@ -174,7 +223,8 @@ export async function assemblePlaceholder(): Promise<Blob> {
     });
 
     await Promise.race([execPromise, timeoutPromise]);
-    log('FFmpeg execution completed successfully');
+    const execTime = Date.now() - execStartTime;
+    log(`FFmpeg execution completed successfully in ${execTime}ms`);
 
     log('Reading generated MP4 file...');
     const data = await ffmpeg.readFile('output.mp4');
