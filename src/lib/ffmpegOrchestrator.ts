@@ -48,133 +48,66 @@ async function loadFFmpegCore(): Promise<FFmpeg> {
   });
 
   try {
-    log('Creating blob URLs for FFmpeg core files...');
+    log('Starting simplified FFmpeg core loading...');
     
-    // Use the correct URLs that match @ffmpeg/ffmpeg@0.12.15
+    // Use the proven approach from FFmpeg.wasm documentation
     const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
     
-    log(`Loading from: ${baseURL}`);
-    log(`Core JS URL: ${baseURL}/ffmpeg-core.js`);
-    log(`Core WASM URL: ${baseURL}/ffmpeg-core.wasm`);
+    log(`Loading core from: ${baseURL}`);
     
-    // Pre-download the files with progress tracking
-    log('Starting file downloads with progress tracking...');
+    // Use the standard toBlobURL approach that's proven to work
+    log('Step 1: Creating blob URLs...');
+    const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+    log('✓ Core JS blob URL created');
     
-    const downloadWithProgress = async (url: string, description: string) => {
-      log(`Downloading ${description}...`);
-      const startTime = Date.now();
-      
-      try {
-        const response = await fetch(url);
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        
-        const contentLength = response.headers.get('content-length');
-        const total = contentLength ? parseInt(contentLength, 10) : 0;
-        log(`${description} size: ${Math.round(total / 1024)}KB`);
-        
-        const reader = response.body?.getReader();
-        if (!reader) throw new Error('No response body');
-        
-        const chunks: Uint8Array[] = [];
-        let downloaded = 0;
-        let lastProgress = 0;
-        
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          
-          chunks.push(value);
-          downloaded += value.length;
-          
-          if (total > 0) {
-            const progress = Math.round((downloaded / total) * 100);
-            if (progress >= lastProgress + 10) { // Log every 10%
-              log(`${description} download: ${progress}% (${Math.round(downloaded / 1024)}KB)`);
-              lastProgress = progress;
-            }
-          }
-        }
-        
-        const elapsed = Date.now() - startTime;
-        log(`${description} downloaded successfully in ${elapsed}ms`);
-        
-        // Concatenate all chunks into a single Uint8Array
-        const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
-        const result = new Uint8Array(totalLength);
-        let offset = 0;
-        for (const chunk of chunks) {
-          result.set(chunk, offset);
-          offset += chunk.length;
-        }
-        
-        return result;
-      } catch (error) {
-        logError(`Failed to download ${description}`, error);
-        throw error;
-      }
-    };
-
-    // Download both files in parallel
-    const [jsData, wasmData] = await Promise.all([
-      downloadWithProgress(`${baseURL}/ffmpeg-core.js`, 'Core JS'),
-      downloadWithProgress(`${baseURL}/ffmpeg-core.wasm`, 'Core WASM')
-    ]);
-
-    log('Converting downloaded files to blob URLs...');
-    const [coreURL, wasmURL] = await Promise.all([
-      toBlobURL(new Blob([jsData], { type: 'text/javascript' }), 'text/javascript').then(url => {
-        log('Core JS blob URL created:', url.substring(0, 50) + '...');
-        return url;
-      }),
-      toBlobURL(new Blob([wasmData], { type: 'application/wasm' }), 'application/wasm').then(url => {
-        log('Core WASM blob URL created:', url.substring(0, 50) + '...');
-        return url;
-      })
-    ]);
-
-    log('Starting FFmpeg core initialization with 60 second timeout...');
+    const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+    log('✓ Core WASM blob URL created');
     
-    // Create a timeout promise with much longer timeout
+    log('Step 2: Initializing FFmpeg core (this may take up to 2 minutes on slow connections)...');
+    
+    // Load with extended timeout but simpler approach
+    const loadStartTime = Date.now();
+    
+    // Create timeout promise - 2 minutes should be enough for any reasonable connection
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => {
-        reject(new Error('FFmpeg initialization timeout after 60 seconds'));
-      }, 60000);
+        reject(new Error('FFmpeg core loading timeout after 2 minutes'));
+      }, 120000); // 2 minutes
     });
 
-    // Race the load against the timeout
-    const loadStartTime = Date.now();
+    // Load FFmpeg core
     await Promise.race([
       ffmpeg.load({ coreURL, wasmURL }),
       timeoutPromise
     ]);
 
     const loadTime = Date.now() - loadStartTime;
-    log(`FFmpeg loaded successfully in ${loadTime}ms!`);
+    log(`✓ FFmpeg loaded successfully in ${Math.round(loadTime / 1000)}s!`);
+    
     ffmpegInstance = ffmpeg;
-    loadPromise = null; // Clear the loading promise
+    loadPromise = null;
     
     return ffmpeg;
     
   } catch (error) {
-    loadPromise = null; // Clear the failed loading promise
-    logError('Failed to load FFmpeg core', error);
+    loadPromise = null;
+    logError('FFmpeg loading failed', error);
     
-    // Provide specific error messages
+    // Clear any partial state
+    ffmpegInstance = null;
+    
+    // Provide actionable error messages
     if (error instanceof Error) {
       if (error.message.includes('timeout')) {
-        throw new Error('FFmpeg loading is taking longer than expected. This may be due to a slow internet connection. Please ensure you have a stable connection and try again.');
-      } else if (error.message.includes('fetch') || error.message.includes('network') || error.message.includes('Failed to fetch')) {
-        throw new Error('Network error downloading FFmpeg core files. Please check your internet connection and try again.');
-      } else if (error.message.includes('HTTP')) {
-        throw new Error(`Server error: ${error.message}. Please try again later.`);
+        throw new Error('FFmpeg core loading timed out after 2 minutes. This typically indicates a very slow internet connection. Please try again with a better connection, or try again later.');
+      } else if (error.message.includes('fetch') || error.message.includes('network')) {
+        throw new Error('Network error while downloading FFmpeg core files (~3MB total). Please check your internet connection and try again.');
       } else if (error.message.includes('CORS')) {
-        throw new Error('Browser security (CORS) error. Try refreshing the page.');
+        throw new Error('Browser security error. Please refresh the page and try again.');
       }
     }
     
-    throw new Error(`FFmpeg initialization failed: ${error}`);
+    throw new Error(`Failed to initialize FFmpeg: ${error}`);
   }
 }
 
@@ -183,77 +116,54 @@ async function loadFFmpegCore(): Promise<FFmpeg> {
  */
 export async function assemblePlaceholder(): Promise<Blob> {
   try {
-    log('Starting assemblePlaceholder()...');
+    log('Starting video generation...');
     
     const ffmpeg = await getFFmpeg();
-    log('FFmpeg instance ready, beginning video generation...');
+    log('FFmpeg ready, generating video...');
     
-    // Clear any existing files
-    const filesToClean = ['output.mp4'];
-    for (const file of filesToClean) {
-      try {
-        await ffmpeg.deleteFile(file);
-        log(`Cleaned up existing file: ${file}`);
-      } catch (e) {
-        log(`File ${file} doesn't exist (this is fine)`);
-      }
+    // Clean up any existing files
+    try {
+      await ffmpeg.deleteFile('output.mp4');
+      log('Cleaned up existing output file');
+    } catch (e) {
+      // File doesn't exist, that's fine
     }
 
-    log('Executing FFmpeg command to generate black video...');
+    log('Executing video generation command...');
     
-    const ffmpegArgs = [
+    // Generate 1-second black video in portrait mode
+    await ffmpeg.exec([
       '-f', 'lavfi',
       '-i', 'color=black:size=1080x1920:duration=1',
       '-c:v', 'libx264',
       '-pix_fmt', 'yuv420p',
       '-r', '30',
-      '-y', // Overwrite output file
+      '-y',
       'output.mp4'
-    ];
-    
-    log('FFmpeg command:', ffmpegArgs.join(' '));
-    
-    // Execute with timeout
-    const execStartTime = Date.now();
-    const execPromise = ffmpeg.exec(ffmpegArgs);
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => {
-        reject(new Error('FFmpeg execution timeout after 30 seconds'));
-      }, 30000);
-    });
+    ]);
 
-    await Promise.race([execPromise, timeoutPromise]);
-    const execTime = Date.now() - execStartTime;
-    log(`FFmpeg execution completed successfully in ${execTime}ms`);
-
-    log('Reading generated MP4 file...');
+    log('Reading generated video file...');
     const data = await ffmpeg.readFile('output.mp4');
-    log('MP4 file read successfully, size:', data.length, 'bytes');
     
     if (data.length === 0) {
-      throw new Error('Generated MP4 file is empty');
+      throw new Error('Generated video file is empty');
     }
 
-    log('Converting to Blob...');
-    const videoBlob = new Blob([data], { type: 'video/mp4' });
-    log('Blob created successfully, final size:', videoBlob.size, 'bytes');
+    log(`Video generated successfully: ${Math.round(data.length / 1024)}KB`);
     
-    log('assemblePlaceholder() completed successfully');
+    const videoBlob = new Blob([data], { type: 'video/mp4' });
     return videoBlob;
     
   } catch (error) {
-    logError('assemblePlaceholder() failed', error);
+    logError('Video generation failed', error);
     throw error;
   }
 }
 
 /**
  * Future: Assemble full video from storyboard scenes
- * This function will be implemented in the next step
  */
 export async function assembleStoryboard(scenes: any[]): Promise<Blob> {
   log('assembleStoryboard called with', scenes.length, 'scenes');
-  
-  // For now, just return the placeholder
   return assemblePlaceholder();
 }
