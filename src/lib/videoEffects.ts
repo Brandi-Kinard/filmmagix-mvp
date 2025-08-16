@@ -218,25 +218,31 @@ export function createImprovedTextOverlay(
 ): string {
   // Calculate appropriate font size and max characters per line
   const textLength = text.length;
-  let fontSize = 48;
-  let maxCharsPerLine = 35; // Conservative estimate for 1920px width
+  let fontSize = 40;
+  let maxCharsPerLine = 25; // Much more conservative for 1920px width
   
   if (textLength > 100) {
-    fontSize = 36;
-    maxCharsPerLine = 45;
-  } else if (textLength > 60) {
-    fontSize = 42;
-    maxCharsPerLine = 40;
-  } else if (textLength < 30) {
-    fontSize = 54;
+    fontSize = 32;
     maxCharsPerLine = 30;
+  } else if (textLength > 60) {
+    fontSize = 36;
+    maxCharsPerLine = 28;
+  } else if (textLength < 30) {
+    fontSize = 44;
+    maxCharsPerLine = 22;
   }
   
   // Wrap text to prevent stretching beyond video width
   const wrappedText = wrapText(text, maxCharsPerLine);
   
-  // Simple text escaping for FFmpeg
-  const escapedText = wrappedText.replace(/'/g, "''");
+  // Proper text escaping for FFmpeg - escape all special characters
+  const escapedText = wrappedText
+    .replace(/\\/g, '\\\\')  // Escape backslashes first
+    .replace(/'/g, "\\'")    // Escape single quotes  
+    .replace(/"/g, '\\"')    // Escape double quotes
+    .replace(/:/g, '\\:')    // Escape colons
+    .replace(/\[/g, '\\[')   // Escape square brackets
+    .replace(/\]/g, '\\]');
   
   console.log(`[TEXT] Original: "${text}"`);
   console.log(`[TEXT] Wrapped: "${wrappedText}"`);

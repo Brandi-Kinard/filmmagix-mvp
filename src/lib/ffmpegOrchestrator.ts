@@ -200,22 +200,19 @@ export async function assembleVisualSmokeTest(): Promise<Blob> {
     const ffmpeg = await getFFmpeg();
     await ensureFont(ffmpeg);
     
-    // Download known-good image from a reliable source
-    const imageUrl = 'https://picsum.photos/1920/1080?random=1';
-    log('🧪 Downloading test image from Picsum...');
+    // Skip network entirely - generate image using FFmpeg lavfi
+    log('🧪 Generating test background using FFmpeg lavfi...');
     
-    const response = await fetch(imageUrl);
-    if (!response.ok) {
-      throw new Error(`Failed to download test image: ${response.status}`);
-    }
+    // Create test background directly with FFmpeg - no network required
+    await ffmpeg.run(
+      '-f', 'lavfi',
+      '-i', 'color=c=blue:s=1920x1080:d=1',
+      '-frames:v', '1',
+      '-y',
+      'scene.jpg'
+    );
     
-    const imageData = await response.arrayBuffer();
-    const imageBytes = new Uint8Array(imageData);
-    log(`🧪 Test image downloaded: ${Math.round(imageBytes.length / 1024)}KB`);
-    
-    // Write image to FFmpeg FS
-    ffmpeg.FS('writeFile', 'scene.jpg', imageBytes);
-    log('🧪 Image written to FFmpeg FS');
+    log('🧪 Test background generated with FFmpeg lavfi');
     
     // Build the correct filter chain
     const filterComplex = `
@@ -341,28 +338,35 @@ export async function assembleStoryboard(scenes: Scene[], options?: { crossfade?
           undefined // manualUrl - for user overrides
         );
         
-        // If relevance system fails, use reliable Picsum fallback
+        // If relevance system fails, generate image with FFmpeg lavfi
         if (!fetchedImage) {
-          log(`⚠️ Relevance system failed for scene ${i + 1}, using Picsum fallback...`);
-          const fallbackUrl = `https://picsum.photos/1920/1080?random=${i + 100}`;
+          log(`⚠️ Relevance system failed for scene ${i + 1}, generating with FFmpeg...`);
           try {
-            const response = await fetch(fallbackUrl);
-            if (response.ok) {
-              const blob = await response.blob();
-              const arrayBuffer = await blob.arrayBuffer();
-              const bytes = new Uint8Array(arrayBuffer);
-              fetchedImage = {
-                bytes,
-                ext: 'jpg' as const,
-                srcName: 'picsum-fallback',
-                sourceUrl: fallbackUrl,
-                contentType: 'image/jpeg',
-                relevanceScore: 0
-              };
-              log(`✅ Picsum fallback successful for scene ${i + 1}`);
-            }
+            // Generate a colored background directly with FFmpeg
+            const colors = ['blue', 'green', 'purple', 'orange', 'red'];
+            const color = colors[i % colors.length];
+            
+            await ffmpeg.run(
+              '-f', 'lavfi',
+              '-i', `color=c=${color}:s=1920x1080:d=1`,
+              '-frames:v', '1',
+              '-y',
+              `fallback-${i}.jpg`
+            );
+            
+            // Read the generated image
+            const imageData = ffmpeg.FS('readFile', `fallback-${i}.jpg`);
+            fetchedImage = {
+              bytes: imageData,
+              ext: 'jpg' as const,
+              srcName: 'ffmpeg-generated',
+              sourceUrl: `Generated ${color} background`,
+              contentType: 'image/jpeg',
+              relevanceScore: 0
+            };
+            log(`✅ FFmpeg fallback successful for scene ${i + 1} (${color})`);
           } catch (fallbackError) {
-            log(`❌ Even Picsum fallback failed: ${fallbackError}`);
+            log(`❌ Even FFmpeg fallback failed: ${fallbackError}`);
           }
         }
         
