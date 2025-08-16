@@ -335,60 +335,42 @@ export async function assembleStoryboard(scenes: Scene[], options?: { crossfade?
         const keywords = extractKeywords(scene.text);
         const searchTerm = keywords[0] || 'scenic';
         
-        // Try Unsplash Source (most reliable)
+        // Try Picsum (most reliable, no keyword filtering issues)
         try {
-          const imageUrl = `https://source.unsplash.com/1920x1080/?${encodeURIComponent(searchTerm)}`;
-          log(`📸 Fetching from Unsplash: ${imageUrl}`);
+          const imageUrl = `https://picsum.photos/1920/1080?random=${Date.now() + i}`;
+          log(`📸 Fetching from Picsum: ${imageUrl}`);
           
-          const response = await fetch(imageUrl);
-          if (response.ok) {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
+          
+          const response = await fetch(imageUrl, { 
+            signal: controller.signal,
+            headers: {
+              'Accept': 'image/*',
+              'Cache-Control': 'no-cache'
+            }
+          });
+          clearTimeout(timeoutId);
+          
+          if (response.ok && response.headers.get('content-type')?.startsWith('image/')) {
             const blob = await response.blob();
             const arrayBuffer = await blob.arrayBuffer();
             const bytes = new Uint8Array(arrayBuffer);
             
-            if (bytes.length > 1024) { // Valid image
+            if (bytes.length > 5000) { // Valid image (at least 5KB)
               fetchedImage = {
                 bytes,
                 ext: 'jpg' as const,
-                srcName: 'unsplash',
+                srcName: 'picsum',
                 sourceUrl: imageUrl,
                 contentType: 'image/jpeg',
-                relevanceScore: 80
+                relevanceScore: 60
               };
-              log(`✅ Unsplash success for "${searchTerm}": ${Math.round(bytes.length / 1024)}KB`);
+              log(`✅ Picsum success: ${Math.round(bytes.length / 1024)}KB`);
             }
           }
-        } catch (unsplashError) {
-          log(`❌ Unsplash failed: ${unsplashError}`);
-        }
-        
-        // Try Picsum as secondary fallback
-        if (!fetchedImage) {
-          try {
-            const picsumUrl = `https://picsum.photos/1920/1080?random=${i + Date.now()}`;
-            log(`📸 Trying Picsum fallback: ${picsumUrl}`);
-            
-            const response = await fetch(picsumUrl);
-            if (response.ok) {
-              const blob = await response.blob();
-              const arrayBuffer = await blob.arrayBuffer();
-              const bytes = new Uint8Array(arrayBuffer);
-              
-              if (bytes.length > 1024) {
-                fetchedImage = {
-                  bytes,
-                  ext: 'jpg' as const,
-                  srcName: 'picsum',
-                  sourceUrl: picsumUrl,
-                  contentType: 'image/jpeg',
-                  relevanceScore: 20
-                };
-                log(`✅ Picsum success: ${Math.round(bytes.length / 1024)}KB`);
-              }
-            }
-          } catch (picsumError) {
-            log(`❌ Picsum failed: ${picsumError}`);
-          }
+        } catch (picsumError) {
+          log(`❌ Picsum failed: ${picsumError}`);
         }
         
         // If all network sources fail, generate image with FFmpeg lavfi

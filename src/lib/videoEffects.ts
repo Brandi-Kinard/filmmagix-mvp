@@ -235,14 +235,10 @@ export function createImprovedTextOverlay(
   // Wrap text to prevent stretching beyond video width
   const wrappedText = wrapText(text, maxCharsPerLine);
   
-  // Proper text escaping for FFmpeg - escape all special characters
+  // Simple text escaping for FFmpeg - only escape absolutely necessary characters
   const escapedText = wrappedText
-    .replace(/\\/g, '\\\\')  // Escape backslashes first
-    .replace(/'/g, "\\'")    // Escape single quotes  
-    .replace(/"/g, '\\"')    // Escape double quotes
-    .replace(/:/g, '\\:')    // Escape colons
-    .replace(/\[/g, '\\[')   // Escape square brackets
-    .replace(/\]/g, '\\]');
+    .replace(/'/g, "'\"'\"'")  // Replace single quotes with '"'"'
+    .replace(/:/g, '\\:');     // Escape colons only
   
   console.log(`[TEXT] Original: "${text}"`);
   console.log(`[TEXT] Wrapped: "${wrappedText}"`);
