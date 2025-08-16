@@ -145,6 +145,8 @@ export async function getDebugInfo() {
 import { computeCaptionLayout, pickBgColor, ASPECT_CONFIGS, layoutForAspect, type AspectKey, type CaptionLayoutResult } from './textLayout';
 import { getSceneImage, extractKeywords, getTintForKeywords, getTintForSceneType, generateKenBurnsParams, type SceneImage, type KenBurnsParams, type TintConfig } from './imageSource';
 import { createCompleteFilter, createTextOverlayFilter, createImprovedTextOverlay, createKenBurnsFilter, createSimplifiedFilter } from './videoEffects';
+import { fetchRelevantSceneImage, type FetchedImage } from './relevantImageSource';
+import { buildVisualQueries } from './visualQuery';
 
 // Scene type definition
 export type Scene = {
@@ -239,9 +241,21 @@ export async function assembleStoryboard(scenes: Scene[], options?: { crossfade?
       log(`🎬 Generating cinematic scene ${i + 1}/${scenes.length}: ${scene.kind.toUpperCase()}`);
       
       try {
-        // 1. Get scene image using new pipeline
-        log(`📸 Fetching high-resolution image for scene ${i + 1}...`);
-        const sceneImage = await getSceneImage(scene, i);
+        // 1. Get scene image using relevance-first pipeline
+        log(`📸 Fetching relevant image for scene ${i + 1}...`);
+        
+        // Try new relevance-first system
+        const fetchedImage = await fetchRelevantSceneImage(
+          scene.text,
+          scene.kind,
+          i,
+          0, // queryIndex - can be incremented for regeneration
+          false, // useAI - controlled by user setting
+          undefined // manualUrl - for user overrides
+        );
+        
+        // Build visual query for logging
+        const visualQuery = buildVisualQueries(scene.text, scene.kind);
         
         // 2. Use scene-type based tinting (Step 4.1 requirement)
         const tintConfig = getTintForSceneType(scene.kind);
@@ -267,21 +281,23 @@ export async function assembleStoryboard(scenes: Scene[], options?: { crossfade?
           safeWidthPx: captionLayout.safeWidthPx,
           textWarnings: captionLayout.warnings,
           // Image metrics
-          imageUrl: sceneImage.url,
-          imageLocalPath: sceneImage.localPath,
-          imageSource: sceneImage.source,
-          imageExists: sceneImage.fileExists || false,
-          imageDimensions: sceneImage.dimensions,
-          keywords: sceneImage.keywords,
-          aiPrompt: sceneImage.prompt,
-          generationTime: sceneImage.generationTime,
+          imageUrl: fetchedImage?.sourceUrl || '',
+          imageLocalPath: fetchedImage ? `scene-${i + 1}.${fetchedImage.ext}` : '',
+          imageSource: fetchedImage?.srcName || 'fallback',
+          imageExists: !!fetchedImage,
+          imageDimensions: { width: 1920, height: 1080 },
+          keywords: visualQuery.tokens,
+          queryCandidates: visualQuery.candidates,
+          relevanceScore: fetchedImage?.relevanceScore || 0,
+          contentType: fetchedImage?.contentType || '',
           // Effects metrics
           kenBurnsParams,
           tintConfig
         });
         
         // 6. Log scene info with detailed image verification
-        log(`🎨 Scene ${i + 1}: ${sceneImage.source} image (${sceneImage.fileExists ? 'EXISTS' : 'MISSING'}), ${tintConfig.theme} tint, ${kenBurnsParams.zoomDirection} zoom`);
+        log(`🎨 Scene ${i + 1}: ${fetchedImage?.srcName || 'NONE'} (score: ${fetchedImage?.relevanceScore || 0}), ${tintConfig.theme} tint, ${kenBurnsParams.zoomDirection} zoom`);
+        log(`   Query candidates: ${visualQuery.candidates.slice(0, 3).join(' | ')}`);
         
         if (captionLayout.warnings.length > 0) {
           log(`⚠️ Scene ${i + 1} text warnings: ${captionLayout.warnings.join(', ')}`);
@@ -291,41 +307,35 @@ export async function assembleStoryboard(scenes: Scene[], options?: { crossfade?
         let imageFile: string | null = null;
         let imageDownloaded = false;
         
-        log(`🖼️ Scene ${i + 1} IMAGE STATUS:`);
-        log(`   - URL: ${sceneImage.url}`);
-        log(`   - Local Path: ${sceneImage.localPath}`);
-        log(`   - Source: ${sceneImage.source}`);
-        log(`   - File Exists: ${sceneImage.fileExists}`);
-        log(`   - Has Image Data: ${!!(sceneImage as any).imageData}`);
-        
-        if (sceneImage.fileExists && sceneImage.localPath && (sceneImage as any).imageData) {
-          imageFile = sceneImage.localPath;
+        if (fetchedImage && fetchedImage.bytes.length > 0) {
+          imageFile = `scene-${i + 1}.${fetchedImage.ext}`;
+          
+          log(`🖼️ Scene ${i + 1} IMAGE STATUS:`);
+          log(`   - Source: ${fetchedImage.srcName}`);
+          log(`   - URL: ${fetchedImage.sourceUrl.substring(0, 100)}...`);
+          log(`   - Content-Type: ${fetchedImage.contentType}`);
+          log(`   - Size: ${Math.round(fetchedImage.bytes.length / 1024)}KB`);
+          log(`   - Relevance Score: ${fetchedImage.relevanceScore}`);
           
           try {
-            const imageBytes = (sceneImage as any).imageData as Uint8Array;
-            
-            if (!imageBytes || imageBytes.length === 0) {
-              throw new Error('Image data is empty');
-            }
-            
             log(`📁 Writing image to FFmpeg filesystem: ${imageFile}`);
             
             // Write to FFmpeg filesystem
-            ffmpeg.FS('writeFile', imageFile, imageBytes);
+            ffmpeg.FS('writeFile', imageFile, fetchedImage.bytes);
             
             // Verify file was written correctly
             const verifyData = ffmpeg.FS('readFile', imageFile);
             imageDownloaded = verifyData.length > 0;
             
-            if (verifyData.length !== imageBytes.length) {
-              throw new Error(`Size mismatch: wrote ${imageBytes.length}, read ${verifyData.length}`);
+            if (verifyData.length !== fetchedImage.bytes.length) {
+              throw new Error(`Size mismatch: wrote ${fetchedImage.bytes.length}, read ${verifyData.length}`);
             }
             
             log(`✅ Image VERIFIED in FFmpeg filesystem: ${imageFile} (${verifyData.length} bytes)`);
             
             // List all files to confirm
             const allFiles = ffmpeg.FS('readdir', '.');
-            log(`🗂 FFmpeg filesystem contents: ${allFiles.join(', ')}`);
+            log(`🗂 FFmpeg filesystem contents: ${allFiles.filter((f: string) => f.endsWith('.jpg') || f.endsWith('.png')).join(', ')}`);
             
           } catch (error) {
             log(`❌ Image preparation failed for scene ${i + 1}: ${error}`);
@@ -333,8 +343,8 @@ export async function assembleStoryboard(scenes: Scene[], options?: { crossfade?
             imageDownloaded = false;
           }
         } else {
-          log(`⚠️ Scene ${i + 1}: No valid image data - using color background`);
-          log(`   Missing: ${!sceneImage.fileExists ? 'fileExists' : ''} ${!sceneImage.localPath ? 'localPath' : ''} ${!(sceneImage as any).imageData ? 'imageData' : ''}`);
+          log(`⚠️ Scene ${i + 1}: No valid image fetched - using color background`);
+          log(`   Visual query: ${visualQuery.primary}`);
         }
         
         // 8. Create improved text overlay with proper positioning
