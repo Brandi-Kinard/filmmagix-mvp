@@ -177,6 +177,37 @@ export function createTextOverlayFilter(
 }
 
 /**
+ * Wrap text to fit within specified character width
+ */
+function wrapText(text: string, maxCharsPerLine: number): string {
+  const words = text.split(' ');
+  const lines: string[] = [];
+  let currentLine = '';
+  
+  for (const word of words) {
+    // Check if adding this word would exceed the line length
+    const testLine = currentLine ? `${currentLine} ${word}` : word;
+    
+    if (testLine.length <= maxCharsPerLine) {
+      currentLine = testLine;
+    } else {
+      // Start a new line
+      if (currentLine) {
+        lines.push(currentLine);
+      }
+      currentLine = word;
+    }
+  }
+  
+  // Add the last line
+  if (currentLine) {
+    lines.push(currentLine);
+  }
+  
+  return lines.join('\n'); // Use actual newlines for FFmpeg
+}
+
+/**
  * Create improved text overlay with proper wrapping and auto-sizing
  */
 export function createImprovedTextOverlay(
@@ -185,27 +216,40 @@ export function createImprovedTextOverlay(
   maxHeight: number,
   fontFile = '/data/font.ttf'
 ): string {
-  // Calculate appropriate font size based on text length and available space
+  // Calculate appropriate font size and max characters per line
   const textLength = text.length;
-  let fontSize = 48; // Base size
+  let fontSize = 48;
+  let maxCharsPerLine = 35; // Conservative estimate for 1920px width
   
-  if (textLength > 100) fontSize = 36;
-  else if (textLength > 60) fontSize = 42;
-  else if (textLength < 30) fontSize = 54;
+  if (textLength > 100) {
+    fontSize = 36;
+    maxCharsPerLine = 45;
+  } else if (textLength > 60) {
+    fontSize = 42;
+    maxCharsPerLine = 40;
+  } else if (textLength < 30) {
+    fontSize = 54;
+    maxCharsPerLine = 30;
+  }
   
-  // Simple text escaping for FFmpeg - avoid complex escaping that might break
-  const escapedText = text.replace(/'/g, "''").replace(/:/g, '\\:');
+  // Wrap text to prevent stretching beyond video width
+  const wrappedText = wrapText(text, maxCharsPerLine);
   
-  // Calculate wrapping width (85% of available width)
-  const wrapWidth = Math.round(maxWidth * 0.85);
+  // Simple text escaping for FFmpeg
+  const escapedText = wrappedText.replace(/'/g, "''");
+  
+  console.log(`[TEXT] Original: "${text}"`);
+  console.log(`[TEXT] Wrapped: "${wrappedText}"`);
+  console.log(`[TEXT] Font size: ${fontSize}px, Max chars: ${maxCharsPerLine}`);
   
   return [
     `drawtext=fontfile=${fontFile}`,
     `text='${escapedText}'`,
     `fontcolor=white`,
     `fontsize=${fontSize}`,
-    `x=(w-text_w)/2`,
+    `x=(w-text_w)/2`, // Center horizontally
     `y=${Math.round(maxHeight * 0.15)}`, // 15% from top
+    `line_spacing=10`,
     `borderw=2`,
     `bordercolor=black@0.8`,
     `box=1`,

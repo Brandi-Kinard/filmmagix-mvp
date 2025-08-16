@@ -55,18 +55,146 @@ const TINT_THEMES: Record<string, TintConfig> = {
 };
 
 /**
- * Extract keywords from scene text for image search and tinting
+ * Extract highly relevant keywords from scene text for image search
  */
 export function extractKeywords(text: string): string[] {
-  // Simple keyword extraction - look for nouns and important words
-  const words = text.toLowerCase()
-    .replace(/[^\w\s]/g, ' ')
-    .split(/\s+/)
-    .filter(word => word.length > 3)
-    .filter(word => !['that', 'with', 'they', 'were', 'been', 'have', 'this', 'will', 'from', 'each', 'which', 'their', 'said', 'each', 'would', 'there', 'could', 'other'].includes(word));
+  console.log(`[KEYWORDS] Analyzing text: "${text}"`);
   
-  // Return unique words, limit to top 5
-  return [...new Set(words)].slice(0, 5);
+  // Advanced keyword extraction with semantic understanding
+  const allWords = text.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 2);
+  
+  // Step 1: Find proper nouns (capitalized words in original text)
+  const properNouns = (text.match(/\b[A-Z][a-z]+\b/g) || [])
+    .map(word => word.toLowerCase())
+    .filter(word => word.length > 2);
+  
+  // Step 2: Comprehensive visual keyword dictionary
+  const visualKeywords = new Map([
+    // Professions & People
+    ['pianist', 'piano'], ['musician', 'music'], ['artist', 'art'], ['chef', 'kitchen'], 
+    ['doctor', 'hospital'], ['teacher', 'classroom'], ['dancer', 'dance'], ['singer', 'microphone'],
+    ['writer', 'typewriter'], ['photographer', 'camera'], ['painter', 'easel'],
+    
+    // Locations - Cities
+    ['paris', 'eiffel tower'], ['london', 'big ben'], ['tokyo', 'cherry blossom'], 
+    ['rome', 'colosseum'], ['venice', 'canal'], ['barcelona', 'architecture'],
+    
+    // Venues & Places
+    ['cafe', 'coffee shop'], ['restaurant', 'dining'], ['bar', 'drinks'], 
+    ['theater', 'stage'], ['concert', 'orchestra'], ['studio', 'recording'],
+    ['library', 'books'], ['museum', 'gallery'], ['church', 'cathedral'],
+    ['park', 'garden'], ['beach', 'ocean'], ['forest', 'trees'],
+    
+    // Instruments & Objects
+    ['piano', 'grand piano'], ['guitar', 'acoustic guitar'], ['violin', 'orchestra'],
+    ['drums', 'drumset'], ['saxophone', 'jazz'], ['trumpet', 'brass'],
+    
+    // Emotions & Atmosphere (when visual)
+    ['love', 'romantic couple'], ['heartbreak', 'sad person'], ['joy', 'celebration'],
+    ['mystery', 'dark alley'], ['adventure', 'journey'], ['peaceful', 'meditation'],
+    
+    // Activities
+    ['wedding', 'bride groom'], ['party', 'celebration'], ['dinner', 'table setting'],
+    ['performance', 'stage lights'], ['meeting', 'conference room'], ['travel', 'suitcase'],
+    
+    // Time & Weather
+    ['morning', 'sunrise'], ['evening', 'sunset'], ['night', 'city lights'],
+    ['rain', 'umbrella'], ['snow', 'winter scene'], ['storm', 'lightning'],
+    
+    // Vehicles & Transport
+    ['train', 'railway'], ['plane', 'airport'], ['boat', 'harbor'], ['car', 'street']
+  ]);
+  
+  // Step 3: Find exact matches from our visual dictionary
+  const foundVisualKeywords = allWords
+    .filter(word => visualKeywords.has(word))
+    .map(word => visualKeywords.get(word)!);
+  
+  // Step 4: Scene context analysis - look for compound meanings
+  const sceneAnalysis = analyzeSceneContext(text);
+  
+  // Step 5: Combine and prioritize keywords
+  let finalKeywords: string[] = [];
+  
+  // Priority 1: Scene context (most important)
+  if (sceneAnalysis.length > 0) {
+    finalKeywords.push(sceneAnalysis[0]);
+  }
+  
+  // Priority 2: Visual keywords from dictionary
+  if (foundVisualKeywords.length > 0) {
+    finalKeywords.push(foundVisualKeywords[0]);
+  }
+  
+  // Priority 3: Proper nouns (places, names)
+  if (properNouns.length > 0) {
+    finalKeywords.push(properNouns[0]);
+  }
+  
+  // If we still don't have enough, add more visual keywords
+  foundVisualKeywords.slice(1, 3).forEach(keyword => {
+    if (finalKeywords.length < 3 && !finalKeywords.includes(keyword)) {
+      finalKeywords.push(keyword);
+    }
+  });
+  
+  // Fallback: if nothing found, use basic meaningful words
+  if (finalKeywords.length === 0) {
+    const fallbackWords = allWords.filter(word => 
+      !['the', 'and', 'or', 'but', 'for', 'with', 'after', 'before', 'during'].includes(word)
+    );
+    finalKeywords = fallbackWords.slice(0, 2);
+  }
+  
+  console.log(`[KEYWORDS] Scene analysis: ${sceneAnalysis.join(', ')}`);
+  console.log(`[KEYWORDS] Visual matches: ${foundVisualKeywords.join(', ')}`);
+  console.log(`[KEYWORDS] Proper nouns: ${properNouns.join(', ')}`);
+  console.log(`[KEYWORDS] FINAL: ${finalKeywords.join(', ')}`);
+  
+  return finalKeywords.slice(0, 2); // Limit to top 2 for best results
+}
+
+/**
+ * Analyze scene context for compound meaning
+ */
+function analyzeSceneContext(text: string): string[] {
+  const contextPatterns = [
+    // Musical scenes
+    { pattern: /pianist.*paris|piano.*cafe|musician.*city/i, keywords: ['pianist in cafe', 'paris musician'] },
+    { pattern: /guitar.*street|busker|street.*music/i, keywords: ['street musician', 'guitar player'] },
+    { pattern: /concert.*hall|orchestra|symphony/i, keywords: ['concert hall', 'orchestra'] },
+    
+    // Romantic scenes
+    { pattern: /love.*disappear|heartbreak|lost.*love/i, keywords: ['heartbreak', 'sad person'] },
+    { pattern: /couple.*cafe|romantic.*dinner|date.*restaurant/i, keywords: ['romantic dinner', 'couple cafe'] },
+    { pattern: /wedding|bride|groom|marriage/i, keywords: ['wedding ceremony', 'bride groom'] },
+    
+    // Urban scenes
+    { pattern: /empty.*cafe|cafe.*empty|closed.*restaurant/i, keywords: ['empty cafe', 'closed restaurant'] },
+    { pattern: /city.*night|urban.*evening|street.*lights/i, keywords: ['city night', 'street lights'] },
+    { pattern: /rain.*city|storm.*street|weather.*town/i, keywords: ['rainy city', 'storm street'] },
+    
+    // Travel/Adventure
+    { pattern: /journey.*mountain|travel.*road|adventure.*path/i, keywords: ['mountain journey', 'travel road'] },
+    { pattern: /train.*station|airport.*departure|boat.*harbor/i, keywords: ['train station', 'airport'] },
+    
+    // Work/Professional
+    { pattern: /office.*meeting|business.*conference|work.*desk/i, keywords: ['office meeting', 'business'] },
+    { pattern: /kitchen.*chef|cooking.*restaurant|culinary/i, keywords: ['chef kitchen', 'restaurant cooking'] },
+    
+    // Mystery/Drama
+    { pattern: /mystery.*alley|dark.*street|shadow.*figure/i, keywords: ['dark alley', 'mystery'] },
+    { pattern: /investigation|detective|crime.*scene/i, keywords: ['detective', 'investigation'] }
+  ];
+  
+  for (const { pattern, keywords } of contextPatterns) {
+    if (pattern.test(text)) {
+      console.log(`[CONTEXT] Matched pattern for: ${keywords[0]}`);
+      return keywords;
+    }
+  }
+  
+  return [];
 }
 
 /**
@@ -111,38 +239,63 @@ export function generateKenBurnsParams(durationSeconds: number): KenBurnsParams 
  */
 export function getUnsplashImageUrl(keywords: string[], width = 1920, height = 1080): string {
   // Use Unsplash Source API for reliable image fetching
-  const query = keywords.slice(0, 2).join('+'); // Use top 2 keywords with + separator
-  const baseUrl = `https://source.unsplash.com/${width}x${height}`;
-  
-  if (query && query.length > 0) {
-    return `${baseUrl}/?${encodeURIComponent(query)}`;
+  if (keywords && keywords.length > 0) {
+    // Use the first keyword as primary search term
+    const primaryKeyword = keywords[0];
+    return `https://source.unsplash.com/${width}x${height}/?${encodeURIComponent(primaryKeyword)}`;
   }
   
-  return `${baseUrl}/?nature,landscape`; // Reliable fallback
+  return `https://source.unsplash.com/${width}x${height}/?nature`; // Reliable fallback
 }
 
 /**
- * Get reliable stock image URLs that actually work
+ * Get highly relevant stock image URLs with advanced search
  */
 export function getStockImageUrl(keywords: string[], width = 1920, height = 1080, sourceIndex = 0): string {
-  // Use multiple reliable sources
   const sources = [
-    // Unsplash Source - most reliable
+    // Unsplash Source with enhanced search
     () => {
-      const query = keywords.slice(0, 2).join('+');
-      return `https://source.unsplash.com/${width}x${height}/?${query || 'nature'}`;
+      if (keywords && keywords.length > 0) {
+        const searchTerm = keywords[0].replace(/\s+/g, '%20'); // URL encode spaces
+        // Add quality and relevance parameters
+        return `https://source.unsplash.com/${width}x${height}/?${searchTerm}`;
+      }
+      return `https://source.unsplash.com/${width}x${height}/?cinematic`;
     },
-    // Picsum with seed for consistency
+    
+    // Unsplash with secondary keyword if first fails
     () => {
-      const seed = keywords.join('').replace(/[^a-z0-9]/gi, '') || 'default';
+      if (keywords && keywords.length > 1) {
+        const searchTerm = keywords[1].replace(/\s+/g, '%20');
+        return `https://source.unsplash.com/${width}x${height}/?${searchTerm}`;
+      }
+      return `https://source.unsplash.com/${width}x${height}/?professional`;
+    },
+    
+    // Picsum with meaningful seed from keywords
+    () => {
+      const seed = keywords.length > 0 
+        ? keywords[0].replace(/[^a-z0-9]/gi, '').substring(0, 10) 
+        : 'default';
       return `https://picsum.photos/seed/${seed}/${width}/${height}`;
     },
-    // Lorem Picsum random
-    () => `https://picsum.photos/${width}/${height}?random=${Date.now()}`
+    
+    // Unsplash with combined keywords
+    () => {
+      if (keywords && keywords.length > 0) {
+        const combinedSearch = keywords.slice(0, 2).join('%20').replace(/\s+/g, '%20');
+        return `https://source.unsplash.com/${width}x${height}/?${combinedSearch}`;
+      }
+      return `https://source.unsplash.com/${width}x${height}/?artistic`;
+    }
   ];
   
   const sourceFunc = sources[sourceIndex % sources.length];
-  return sourceFunc();
+  const url = sourceFunc();
+  
+  console.log(`[IMAGE URL] Source ${sourceIndex}: ${url}`);
+  console.log(`[IMAGE URL] Keywords used: [${keywords.join(', ')}]`);
+  return url;
 }
 
 /**
