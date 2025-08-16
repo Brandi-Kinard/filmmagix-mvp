@@ -200,9 +200,9 @@ export async function assembleVisualSmokeTest(): Promise<Blob> {
     const ffmpeg = await getFFmpeg();
     await ensureFont(ffmpeg);
     
-    // Download known-good image from Wikimedia
-    const imageUrl = 'https://upload.wikimedia.org/wikipedia/commons/6/6e/Paris_Night.jpg';
-    log('🧪 Downloading test image from Wikimedia...');
+    // Download known-good image from a reliable source
+    const imageUrl = 'https://picsum.photos/1920/1080?random=1';
+    log('🧪 Downloading test image from Picsum...');
     
     const response = await fetch(imageUrl);
     if (!response.ok) {
@@ -331,8 +331,8 @@ export async function assembleStoryboard(scenes: Scene[], options?: { crossfade?
         // 1. Get scene image using relevance-first pipeline
         log(`📸 Fetching relevant image for scene ${i + 1}...`);
         
-        // Try new relevance-first system
-        const fetchedImage = await fetchRelevantSceneImage(
+        // Try new relevance-first system with fallback
+        let fetchedImage = await fetchRelevantSceneImage(
           scene.text,
           scene.kind,
           i,
@@ -340,6 +340,31 @@ export async function assembleStoryboard(scenes: Scene[], options?: { crossfade?
           false, // useAI - controlled by user setting
           undefined // manualUrl - for user overrides
         );
+        
+        // If relevance system fails, use reliable Picsum fallback
+        if (!fetchedImage) {
+          log(`⚠️ Relevance system failed for scene ${i + 1}, using Picsum fallback...`);
+          const fallbackUrl = `https://picsum.photos/1920/1080?random=${i + 100}`;
+          try {
+            const response = await fetch(fallbackUrl);
+            if (response.ok) {
+              const blob = await response.blob();
+              const arrayBuffer = await blob.arrayBuffer();
+              const bytes = new Uint8Array(arrayBuffer);
+              fetchedImage = {
+                bytes,
+                ext: 'jpg' as const,
+                srcName: 'picsum-fallback',
+                sourceUrl: fallbackUrl,
+                contentType: 'image/jpeg',
+                relevanceScore: 0
+              };
+              log(`✅ Picsum fallback successful for scene ${i + 1}`);
+            }
+          } catch (fallbackError) {
+            log(`❌ Even Picsum fallback failed: ${fallbackError}`);
+          }
+        }
         
         // Build visual query for logging
         const visualQuery = buildVisualQueries(scene.text, scene.kind);
