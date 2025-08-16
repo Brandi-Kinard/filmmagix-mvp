@@ -328,17 +328,70 @@ export async function assembleStoryboard(scenes: Scene[], options?: { crossfade?
         // 1. Get scene image using relevance-first pipeline
         log(`📸 Fetching relevant image for scene ${i + 1}...`);
         
-        // Try new relevance-first system with fallback
-        let fetchedImage = await fetchRelevantSceneImage(
-          scene.text,
-          scene.kind,
-          i,
-          0, // queryIndex - can be incremented for regeneration
-          false, // useAI - controlled by user setting
-          undefined // manualUrl - for user overrides
-        );
+        // Use simple, reliable image fetching
+        let fetchedImage: any = null;
         
-        // If relevance system fails, generate image with FFmpeg lavfi
+        // Extract simple keywords for image search
+        const keywords = extractKeywords(scene.text);
+        const searchTerm = keywords[0] || 'scenic';
+        
+        // Try Unsplash Source (most reliable)
+        try {
+          const imageUrl = `https://source.unsplash.com/1920x1080/?${encodeURIComponent(searchTerm)}`;
+          log(`📸 Fetching from Unsplash: ${imageUrl}`);
+          
+          const response = await fetch(imageUrl);
+          if (response.ok) {
+            const blob = await response.blob();
+            const arrayBuffer = await blob.arrayBuffer();
+            const bytes = new Uint8Array(arrayBuffer);
+            
+            if (bytes.length > 1024) { // Valid image
+              fetchedImage = {
+                bytes,
+                ext: 'jpg' as const,
+                srcName: 'unsplash',
+                sourceUrl: imageUrl,
+                contentType: 'image/jpeg',
+                relevanceScore: 80
+              };
+              log(`✅ Unsplash success for "${searchTerm}": ${Math.round(bytes.length / 1024)}KB`);
+            }
+          }
+        } catch (unsplashError) {
+          log(`❌ Unsplash failed: ${unsplashError}`);
+        }
+        
+        // Try Picsum as secondary fallback
+        if (!fetchedImage) {
+          try {
+            const picsumUrl = `https://picsum.photos/1920/1080?random=${i + Date.now()}`;
+            log(`📸 Trying Picsum fallback: ${picsumUrl}`);
+            
+            const response = await fetch(picsumUrl);
+            if (response.ok) {
+              const blob = await response.blob();
+              const arrayBuffer = await blob.arrayBuffer();
+              const bytes = new Uint8Array(arrayBuffer);
+              
+              if (bytes.length > 1024) {
+                fetchedImage = {
+                  bytes,
+                  ext: 'jpg' as const,
+                  srcName: 'picsum',
+                  sourceUrl: picsumUrl,
+                  contentType: 'image/jpeg',
+                  relevanceScore: 20
+                };
+                log(`✅ Picsum success: ${Math.round(bytes.length / 1024)}KB`);
+              }
+            }
+          } catch (picsumError) {
+            log(`❌ Picsum failed: ${picsumError}`);
+          }
+        }
+        
+        // If all network sources fail, generate image with FFmpeg lavfi
         if (!fetchedImage) {
           log(`⚠️ Relevance system failed for scene ${i + 1}, generating with FFmpeg...`);
           try {
@@ -370,7 +423,7 @@ export async function assembleStoryboard(scenes: Scene[], options?: { crossfade?
           }
         }
         
-        // Build visual query for logging
+        // Build visual query for logging (keeping this for metrics)
         const visualQuery = buildVisualQueries(scene.text, scene.kind);
         
         // 2. Use scene-type based tinting (Step 4.1 requirement)
