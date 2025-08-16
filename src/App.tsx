@@ -1,13 +1,10 @@
-import { useState } from "react";
-import { assemblePlaceholder } from "./lib/ffmpegOrchestrator";
+import { useState, useEffect } from "react";
+import { assemblePlaceholder, assembleStoryboard, getFFmpeg, getDebugInfo } from "./lib/ffmpegOrchestrator";
+import type { Scene } from "./lib/ffmpegOrchestrator";
+import type { AspectKey } from "./lib/textLayout";
+import { ASPECT_CONFIGS } from "./lib/textLayout";
 
-// Temporary inline types and function to test
-interface Scene {
-  text: string;
-  keywords: string[];
-  durationSec: number;
-  kind: "hook" | "beat" | "cta";
-}
+// Scene type is now imported from orchestrator
 
 function buildScenes(raw: string): Scene[] {
   const clean = (raw || "").replace(/\s+/g, " ").trim();
@@ -32,7 +29,42 @@ function buildScenes(raw: string): Scene[] {
 export default function App() {
   const [prompt, setPrompt] = useState("");
   const [scenes, setScenes] = useState<Scene[]>([]);
+  const [aspectRatio] = useState<AspectKey>('landscape'); // Fixed to landscape only
   const [exporting, setExporting] = useState(false);
+  const [ffmpegReady, setFfmpegReady] = useState(false);
+  const [ffmpegError, setFfmpegError] = useState<string | null>(null);
+  const [debugInfo, setDebugInfo] = useState<any>(null);
+  const [showDebug, setShowDebug] = useState(false);
+
+  // Load FFmpeg using guaranteed working approach
+  useEffect(() => {
+    console.log("FilmMagix MVP starting...");
+    setFfmpegError("FFmpeg: loading...");
+    
+    // Get debug info
+    getDebugInfo().then(info => {
+      setDebugInfo(info);
+    });
+    
+    // Load FFmpeg
+    getFFmpeg()
+      .then(() => {
+        console.log("✓ FFmpeg loaded successfully!");
+        setFfmpegReady(true);
+        setFfmpegError(null);
+        // Update debug info
+        getDebugInfo().then(info => {
+          setDebugInfo(info);
+        });
+      })
+      .catch((error) => {
+        console.error("✗ FFmpeg loading failed:", error);
+        setFfmpegError(error.message);
+        getDebugInfo().then(info => {
+          setDebugInfo({...info, lastError: error.message});
+        });
+      });
+  }, []);
 
   const onGenerate = () => {
     const text = prompt.trim();
@@ -47,28 +79,67 @@ export default function App() {
     }
   };
 
-  const onExportMP4 = async () => {
+  const onExportStoryboard = async () => {
+    if (scenes.length === 0) {
+      alert("Please generate some scenes first!");
+      return;
+    }
+    
     setExporting(true);
     try {
-      console.log("Starting MP4 export...");
+      console.log(`Starting storyboard export with ${scenes.length} scenes...`);
+      console.time("Storyboard Export");
       
-      // Show progress in console
-      console.log("Step 1: Initializing FFmpeg...");
-      const videoBlob = await assemblePlaceholder();
+      const videoBlob = await assembleStoryboard(scenes, { aspectRatio });
       
-      console.log("Step 2: Creating download...");
+      console.timeEnd("Storyboard Export");
       
-      // Create download link
+      // Download the video
       const url = URL.createObjectURL(videoBlob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'filmMagix-placeholder.mp4';
+      a.download = 'filmmagix-storyboard.mp4';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       
-      console.log("Step 3: MP4 export completed successfully!");
+      console.log("✓ Storyboard export completed!");
+      console.log("File size:", videoBlob.size, "bytes");
+      
+    } catch (error) {
+      console.error("Error exporting storyboard:", error);
+      let errorMessage = "Failed to export storyboard. ";
+      if (error instanceof Error) {
+        errorMessage += error.message;
+      }
+      alert(errorMessage);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const onExportMP4 = async () => {
+    setExporting(true);
+    try {
+      console.log("Starting MP4 export...");
+      console.time("MP4 Export");
+      
+      const videoBlob = await assemblePlaceholder();
+      
+      console.timeEnd("MP4 Export");
+      
+      // Download the video
+      const url = URL.createObjectURL(videoBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'filmmagix-placeholder.mp4';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      console.log("✓ MP4 export completed!");
       console.log("File size:", videoBlob.size, "bytes");
       
     } catch (error) {
@@ -102,6 +173,57 @@ export default function App() {
   return (
     <div style={{ padding: 24, fontFamily: "Inter, system-ui, Arial" }}>
       <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 16 }}>FilmMagix MVP</h1>
+      
+      {/* FFmpeg Status Indicator */}
+      <div style={{ marginBottom: 16, padding: 8, fontSize: 14, borderRadius: 6, background: ffmpegReady ? "#e8f5e8" : ffmpegError ? "#ffe8e8" : "#fff3cd", color: ffmpegReady ? "#2d5a2d" : ffmpegError ? "#5a2d2d" : "#5a5a2d" }}>
+        {!ffmpegReady && !ffmpegError && "⏳ FFmpeg: loading..."}
+        {ffmpegReady && `✅ FFmpeg: ready (${debugInfo?.loaderMode || "cdn"})`}
+        {ffmpegError && `❌ FFmpeg error: ${ffmpegError}`}
+        <button 
+          onClick={() => setShowDebug(!showDebug)}
+          style={{ marginLeft: 8, padding: "2px 6px", fontSize: 12, background: "rgba(0,0,0,0.1)", border: "none", borderRadius: 3, cursor: "pointer" }}
+        >
+          Debug {showDebug ? "▼" : "▶"}
+        </button>
+      </div>
+
+      {/* Debug Panel */}
+      {showDebug && debugInfo && (
+        <div style={{ marginBottom: 16, padding: 12, fontSize: 12, fontFamily: "monospace", background: "#f8f8f8", border: "1px solid #ddd", borderRadius: 6, color: "#333" }}>
+          <div><strong>FFmpeg Debug Info:</strong></div>
+          <div>Origin: {debugInfo.origin}</div>
+          <div>FFmpeg Loaded: {debugInfo.ffmpegLoaded ? "Yes" : "No"}</div>
+          <div>Loader Mode: {debugInfo.loaderMode || "—"}</div>
+          <div>Local JS File: 
+            <a href="/ffmpeg/ffmpeg-core.js" target="_blank" style={{ marginLeft: 4 }}>
+              {debugInfo.localFiles?.jsStatus} ({debugInfo.localFiles?.jsOk ? "OK" : "FAIL"})
+            </a>
+          </div>
+          <div>Local WASM File: 
+            <a href="/ffmpeg/ffmpeg-core.wasm" target="_blank" style={{ marginLeft: 4 }}>
+              {debugInfo.localFiles?.wasmStatus} ({debugInfo.localFiles?.wasmOk ? "OK" : "FAIL"})
+            </a>
+          </div>
+          <div>Local Worker File: 
+            <a href="/ffmpeg/ffmpeg-worker.js" target="_blank" style={{ marginLeft: 4 }}>
+              {debugInfo.localFiles?.workerStatus} ({debugInfo.localFiles?.workerOk ? "OK" : "FAIL"})
+            </a>
+          </div>
+          {debugInfo.lastError && <div style={{ color: "red" }}>Last Error: {debugInfo.lastError}</div>}
+          
+          <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #ddd" }}>
+            <strong>Text Layout Info:</strong>
+          </div>
+          <div>Mode: LANDSCAPE ONLY (16:9)</div>
+          <div>Frame Size: {ASPECT_CONFIGS[aspectRatio].width}×{ASPECT_CONFIGS[aspectRatio].height}</div>
+          <div style={{ color: "#00aa00", fontWeight: "bold" }}>🎯 OPTIMIZED FOR LANDSCAPE</div>
+          <div>Text Position: CENTER JUSTIFIED</div>
+          <div>Bottom Position: {ASPECT_CONFIGS[aspectRatio].height - 180}px (180px from bottom)</div>
+          <div>Font Size: 32px (FIXED)</div>
+          <div>Max Characters: 40 per line</div>
+          <div>Max Lines: 3 (PLENTY OF ROOM)</div>
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
         <input
@@ -121,12 +243,30 @@ export default function App() {
         </button>
       </div>
 
+      {/* Aspect Ratio Selection - HIDDEN (using landscape only) */}
+
       <p>Scenes generated: {scenes.length}</p>
       
       {scenes.length > 0 && (
         <div>
           <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
             <h3 style={{ margin: 0 }}>Preview:</h3>
+            <button
+              onClick={onExportStoryboard}
+              disabled={exporting || !ffmpegReady}
+              style={{ 
+                padding: "8px 12px", 
+                borderRadius: 6, 
+                background: "#1677ff",
+                color: "#fff",
+                border: "none",
+                cursor: exporting || !ffmpegReady ? "not-allowed" : "pointer",
+                fontSize: "14px",
+                opacity: exporting || !ffmpegReady ? 0.5 : 1
+              }}
+            >
+              {exporting ? "Exporting..." : "Export Storyboard MP4"}
+            </button>
             <button
               onClick={onExportMP4}
               disabled={exporting}
