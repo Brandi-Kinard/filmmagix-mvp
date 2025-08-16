@@ -3,6 +3,7 @@ import { assemblePlaceholder, assembleStoryboard, assembleVisualSmokeTest, getFF
 import type { Scene } from "./lib/ffmpegOrchestrator";
 import type { AspectKey } from "./lib/textLayout";
 import { ASPECT_CONFIGS } from "./lib/textLayout";
+import { AUDIO_TRACKS, DEFAULT_AUDIO_CONFIG, type AudioConfig } from "./lib/audioSystem";
 
 // Scene type is now imported from orchestrator
 
@@ -35,6 +36,7 @@ export default function App() {
   const [ffmpegError, setFfmpegError] = useState<string | null>(null);
   const [debugInfo, setDebugInfo] = useState<any>(null);
   const [showDebug, setShowDebug] = useState(false);
+  const [audioConfig, setAudioConfig] = useState<AudioConfig>(DEFAULT_AUDIO_CONFIG);
 
   // Load FFmpeg using guaranteed working approach
   useEffect(() => {
@@ -90,7 +92,7 @@ export default function App() {
       console.log(`Starting storyboard export with ${scenes.length} scenes...`);
       console.time("Storyboard Export");
       
-      const videoBlob = await assembleStoryboard(scenes, { aspectRatio });
+      const videoBlob = await assembleStoryboard(scenes, { aspectRatio, audioConfig });
       
       console.timeEnd("Storyboard Export");
       
@@ -313,6 +315,81 @@ export default function App() {
       
       {scenes.length > 0 && (
         <div>
+          {/* Audio Panel */}
+          <div style={{ marginBottom: 16, padding: 16, border: "1px solid #ddd", borderRadius: 6, background: "#f9f9f9" }}>
+            <h3 style={{ margin: "0 0 12px 0", fontSize: 16 }}>🎵 Audio Settings</h3>
+            
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+              {/* Background Track Selection */}
+              <div>
+                <label style={{ display: "block", marginBottom: 4, fontSize: 14, fontWeight: 500 }}>
+                  Background Track:
+                </label>
+                <select
+                  value={audioConfig.backgroundTrack}
+                  onChange={(e) => setAudioConfig({ ...audioConfig, backgroundTrack: e.target.value })}
+                  style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid #ccc" }}
+                >
+                  {AUDIO_TRACKS.map(track => (
+                    <option key={track.id} value={track.id}>
+                      {track.name}
+                    </option>
+                  ))}
+                </select>
+                <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>
+                  {AUDIO_TRACKS.find(t => t.id === audioConfig.backgroundTrack)?.description}
+                </div>
+              </div>
+
+              {/* Music Volume */}
+              <div>
+                <label style={{ display: "block", marginBottom: 4, fontSize: 14, fontWeight: 500 }}>
+                  Music Volume: {audioConfig.musicVolume}%
+                </label>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={audioConfig.musicVolume}
+                  onChange={(e) => setAudioConfig({ ...audioConfig, musicVolume: parseInt(e.target.value) })}
+                  style={{ width: "100%" }}
+                />
+                <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>
+                  Target: ~-14 LUFS ({((audioConfig.musicVolume - 100) * 0.4).toFixed(1)} dB)
+                </div>
+              </div>
+            </div>
+
+            {/* Audio Options */}
+            <div style={{ marginTop: 12, display: "flex", gap: 20 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14 }}>
+                <input
+                  type="checkbox"
+                  checked={audioConfig.autoDuck}
+                  onChange={(e) => setAudioConfig({ ...audioConfig, autoDuck: e.target.checked })}
+                />
+                Auto-duck under voiceover (future)
+              </label>
+              
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14 }}>
+                <input
+                  type="checkbox"
+                  checked={audioConfig.whooshTransitions}
+                  onChange={(e) => setAudioConfig({ ...audioConfig, whooshTransitions: e.target.checked })}
+                />
+                Whoosh on transitions
+              </label>
+            </div>
+
+            {/* Audio Status */}
+            {audioConfig.backgroundTrack !== 'none' && (
+              <div style={{ marginTop: 8, padding: 8, background: "#e8f4fd", borderRadius: 4, fontSize: 12 }}>
+                🎼 Selected: <strong>{AUDIO_TRACKS.find(t => t.id === audioConfig.backgroundTrack)?.name}</strong>
+                {audioConfig.whooshTransitions && " + Transition SFX"}
+              </div>
+            )}
+          </div>
+
           <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
             <h3 style={{ margin: 0 }}>Preview:</h3>
             <button

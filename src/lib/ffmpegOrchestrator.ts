@@ -147,6 +147,7 @@ import { getSceneImage, extractKeywords, getTintForKeywords, getTintForSceneType
 import { createCompleteFilter, createTextOverlayFilter, createImprovedTextOverlay, createKenBurnsFilter, createSimplifiedFilter } from './videoEffects';
 import { fetchRelevantSceneImage, type FetchedImage } from './relevantImageSource';
 import { buildVisualQueries } from './visualQuery';
+import { logAudioConfig, calculateFadeTimes, generateWhooshTimestamps, volumeToDb, type AudioConfig } from './audioSystem';
 
 // Scene type definition
 export type Scene = {
@@ -272,7 +273,10 @@ fix_bounds=1[final]`.replace(/\n/g, '');
 /**
  * Generate a full storyboard video from scenes
  */
-export async function assembleStoryboard(scenes: Scene[], options?: { crossfade?: boolean; aspectRatio?: AspectKey }): Promise<Blob> {
+export async function assembleStoryboard(
+  scenes: Scene[], 
+  options?: { crossfade?: boolean; aspectRatio?: AspectKey; audioConfig?: any }
+): Promise<Blob> {
   try {
     const aspectRatio = options?.aspectRatio || 'portrait';
     const aspectConfig = ASPECT_CONFIGS[aspectRatio];
@@ -865,6 +869,103 @@ format=rgba[bg];
         log(`💀 Even emergency video failed: ${emergencyError}`);
         throw new Error(`Complete FFmpeg failure: ${emergencyError}`);
       }
+    }
+    
+    // 🎵 AUDIO MIXING: Add background music if specified
+    const audioConfig: AudioConfig = options?.audioConfig;
+    if (audioConfig && audioConfig.backgroundTrack && audioConfig.backgroundTrack !== 'none') {
+      try {
+        log(`🎵 Adding background music: ${audioConfig.backgroundTrack}`);
+        logAudioConfig(audioConfig, scenes.reduce((total, scene) => total + scene.durationSec, 0));
+        
+        // Try to load the audio file
+        const audioFilename = audioConfig.backgroundTrack + '.mp3';
+        const audioPath = `/audio/${audioFilename}`;
+        
+        try {
+          log(`🎵 Attempting to load audio file: ${audioPath}`);
+          const audioResponse = await fetch(audioPath);
+          
+          if (audioResponse.ok) {
+            const audioBlob = await audioResponse.blob();
+            const audioBuffer = await audioBlob.arrayBuffer();
+            const audioBytes = new Uint8Array(audioBuffer);
+            
+            // Write audio to FFmpeg FS
+            ffmpeg.FS('writeFile', audioFilename, audioBytes);
+            log(`🎵 Audio file loaded: ${Math.round(audioBytes.length / 1024)}KB`);
+            
+            // Calculate total video duration
+            const totalDuration = scenes.reduce((total, scene) => total + scene.durationSec, 0);
+            const fadeTimes = calculateFadeTimes(totalDuration);
+            
+            // Calculate volume gain
+            const volumeGain = volumeToDb(audioConfig.musicVolume);
+            const linearGain = Math.pow(10, volumeGain / 20);
+            
+            log(`🎵 Mixing audio: ${totalDuration}s duration, ${volumeGain.toFixed(1)}dB gain`);
+            
+            // Create new video with audio
+            ffmpeg.FS('writeFile', 'video-only.mp4', data);
+            
+            // Build audio filter
+            let audioFilter = `[1:a]volume=${linearGain.toFixed(3)}`;
+            
+            // Add fade in/out
+            audioFilter += `,afade=t=in:ss=0:d=${fadeTimes.fadeIn}`;
+            audioFilter += `,afade=t=out:st=${fadeTimes.fadeOutStart}:d=${fadeTimes.fadeOut}`;
+            
+            // Optional: Add whoosh SFX (placeholder - would need actual whoosh.mp3)
+            if (audioConfig.whooshTransitions) {
+              log(`🎵 Whoosh transitions enabled (placeholder)`);
+              // This would require loading whoosh-1.mp3 and mixing at transition points
+              // For now, just log that it's enabled
+            }
+            
+            audioFilter += '[final_audio]';
+            
+            // Mix video with audio
+            const mixCommand = [
+              '-i', 'video-only.mp4',   // Input 0: video
+              '-i', audioFilename,       // Input 1: audio
+              '-filter_complex', audioFilter,
+              '-map', '0:v',             // Map video from input 0
+              '-map', '[final_audio]',   // Map processed audio
+              '-c:v', 'copy',            // Don't re-encode video
+              '-c:a', 'aac',             // Encode audio as AAC
+              '-b:a', '192k',            // Audio bitrate
+              '-shortest',               // Stop when shortest input ends
+              '-y',
+              'final-with-audio.mp4'
+            ];
+            
+            log(`🎵 FFmpeg audio mix command: ffmpeg ${mixCommand.join(' ')}`);
+            
+            await ffmpeg.run(...mixCommand);
+            
+            // Read the final video with audio
+            const finalData = ffmpeg.FS('readFile', 'final-with-audio.mp4');
+            log(`🎵 ✅ Audio mixing complete: ${Math.round(finalData.length / 1024)}KB`);
+            
+            // Clean up intermediate files
+            ffmpeg.FS('unlink', 'video-only.mp4');
+            ffmpeg.FS('unlink', audioFilename);
+            ffmpeg.FS('unlink', 'final-with-audio.mp4');
+            
+            data = finalData;
+            
+          } else {
+            log(`⚠️ Audio file not found: ${audioPath} (${audioResponse.status}), using video-only`);
+          }
+        } catch (audioLoadError) {
+          log(`⚠️ Failed to load audio file: ${audioLoadError}, using video-only`);
+        }
+        
+      } catch (audioError) {
+        log(`❌ Audio mixing failed: ${audioError}, using video-only`);
+      }
+    } else {
+      log(`🔇 No background music selected or audio disabled`);
     }
     
     // Clean up temporary files
