@@ -191,6 +191,88 @@ async function ensureFont(ffmpeg: any): Promise<void> {
 }
 
 /**
+ * Visual Smoke Test - Known good pipeline test
+ */
+export async function assembleVisualSmokeTest(): Promise<Blob> {
+  try {
+    log('🧪 VISUAL SMOKE TEST: Starting...');
+    
+    const ffmpeg = await getFFmpeg();
+    await ensureFont(ffmpeg);
+    
+    // Download known-good image from Wikimedia
+    const imageUrl = 'https://upload.wikimedia.org/wikipedia/commons/6/6e/Paris_Night.jpg';
+    log('🧪 Downloading test image from Wikimedia...');
+    
+    const response = await fetch(imageUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to download test image: ${response.status}`);
+    }
+    
+    const imageData = await response.arrayBuffer();
+    const imageBytes = new Uint8Array(imageData);
+    log(`🧪 Test image downloaded: ${Math.round(imageBytes.length / 1024)}KB`);
+    
+    // Write image to FFmpeg FS
+    ffmpeg.FS('writeFile', 'scene.jpg', imageBytes);
+    log('🧪 Image written to FFmpeg FS');
+    
+    // Build the correct filter chain
+    const filterComplex = `
+[0:v]scale=1920:1080,
+zoompan=z='1.0+0.0004*on':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d=180:s=1920x1080,
+format=rgba[bg];
+[1:v]format=rgba,colorchannelmixer=aa=0.25[tint];
+[bg][tint]overlay=shortest=1[withtint];
+[withtint]drawtext=fontfile=/data/font.ttf:
+text='Piano cafe in Paris — smoke test':
+fontsize=56:fontcolor=white:line_spacing=8:
+x=w*0.05:y=h*0.86-text_h:
+box=1:boxcolor=black@0.35:boxborderw=28:
+borderw=2:bordercolor=black@0.7:
+shadowcolor=black@0.6:shadowx=2:shadowy=2:
+fix_bounds=1[final]`.replace(/\n/g, '');
+    
+    log('🧪 Filter complex built:');
+    log(filterComplex);
+    
+    // Run FFmpeg with proper input order and mapping
+    const ffmpegCommand = [
+      '-loop', '1', '-t', '6', '-r', '30', '-i', 'scene.jpg',  // Input 0: image
+      '-f', 'lavfi', '-t', '6', '-i', 'color=c=0x000000:s=1920x1080:r=30',  // Input 1: tint base
+      '-filter_complex', filterComplex,
+      '-map', '[final]',  // CRITICAL: Map only [final]
+      '-t', '6',
+      '-r', '30',
+      '-c:v', 'libx264',
+      '-pix_fmt', 'yuv420p',
+      '-movflags', '+faststart',
+      '-y',
+      'visual-smoke-test.mp4'
+    ];
+    
+    log('🧪 FFmpeg command:');
+    log(`ffmpeg ${ffmpegCommand.join(' ')}`);
+    
+    await ffmpeg.run(...ffmpegCommand);
+    
+    // Verify output
+    const outputData = ffmpeg.FS('readFile', 'visual-smoke-test.mp4');
+    log(`🧪 SMOKE TEST SUCCESS: ${Math.round(outputData.length / 1024)}KB video generated`);
+    
+    // Clean up
+    ffmpeg.FS('unlink', 'scene.jpg');
+    ffmpeg.FS('unlink', 'visual-smoke-test.mp4');
+    
+    return new Blob([outputData.buffer], { type: 'video/mp4' });
+    
+  } catch (error) {
+    log(`🧪 SMOKE TEST FAILED: ${error}`);
+    throw error;
+  }
+}
+
+/**
  * Generate a full storyboard video from scenes
  */
 export async function assembleStoryboard(scenes: Scene[], options?: { crossfade?: boolean; aspectRatio?: AspectKey }): Promise<Blob> {
@@ -235,6 +317,11 @@ export async function assembleStoryboard(scenes: Scene[], options?: { crossfade?
     // Process scenes with imagery, effects, and text
     for (let i = 0; i < scenes.length; i++) {
       const scene = scenes[i];
+      
+      // CRITICAL: Ensure minimum 5s duration per scene
+      const sceneDuration = Math.max(5, scene.durationSec || 5);
+      log(`⏱️ Scene ${i + 1} duration: ${sceneDuration}s (original: ${scene.durationSec}s)`);
+      
       const segmentFile = `seg-${String(i).padStart(3, '0')}.mp4`;
       segmentFiles.push(segmentFile);
       
@@ -260,8 +347,8 @@ export async function assembleStoryboard(scenes: Scene[], options?: { crossfade?
         // 2. Use scene-type based tinting (Step 4.1 requirement)
         const tintConfig = getTintForSceneType(scene.kind);
         
-        // 3. Generate Ken Burns parameters with randomization
-        const kenBurnsParams = generateKenBurnsParams(scene.durationSec);
+        // 3. Generate Ken Burns parameters with randomization (use corrected duration)
+        const kenBurnsParams = generateKenBurnsParams(sceneDuration);
         
         // 4. Compute text layout with improved wrapping
         const captionLayout = computeCaptionLayout({
@@ -358,40 +445,38 @@ export async function assembleStoryboard(scenes: Scene[], options?: { crossfade?
         let ffmpegCommand: string[] = [];
         
         if (imageFile && imageDownloaded) {
-          log(`🎬 Creating scene ${i + 1} with image + Ken Burns + Tint + Text...`);
+          log(`🎬 Creating scene ${i + 1} with CORRECTED filter chain...`);
           
           try {
-            // Build complete filter chain with Ken Burns, tint, and text
-            const kenBurnsFilter = createKenBurnsFilter(kenBurnsParams);
+            // Build CORRECT filter chain similar to smoke test
+            const frameCount = sceneDuration * 30; // 30fps
             
-            // Create filter_complex chain
-            let filterComplex = `[0:v]scale=1920:1080[scaled];`;
-            filterComplex += `[scaled]${kenBurnsFilter}[kenburns];`;
-            
-            // Add tint overlay
+            // Parse tint color
             const rgbaMatch = tintConfig.color.match(/rgba\((\d+),(\d+),(\d+),([0-9.]+)\)/);
-            if (rgbaMatch) {
-              const [, r, g, b, a] = rgbaMatch;
-              const hexColor = `#${parseInt(r).toString(16).padStart(2, '0')}${parseInt(g).toString(16).padStart(2, '0')}${parseInt(b).toString(16).padStart(2, '0')}`;
-              const opacity = parseFloat(a);
-              
-              filterComplex += `color=c=${hexColor}:s=1920x1080:d=${scene.durationSec}[tintcolor];`;
-              filterComplex += `[tintcolor]format=rgba,colorchannelmixer=aa=${opacity}[tint];`;
-              filterComplex += `[kenburns][tint]overlay=0:0[tinted];`;
-              filterComplex += `[tinted]${textFilter}[final]`;
-            } else {
-              // No tint, just add text
-              filterComplex += `[kenburns]${textFilter}[final]`;
-            }
+            const tintHex = rgbaMatch 
+              ? `0x${parseInt(rgbaMatch[1]).toString(16).padStart(2, '0')}${parseInt(rgbaMatch[2]).toString(16).padStart(2, '0')}${parseInt(rgbaMatch[3]).toString(16).padStart(2, '0')}`
+              : '0x000000';
+            const tintOpacity = rgbaMatch ? parseFloat(rgbaMatch[4]) : 0.25;
             
+            // Build filter complex (similar to smoke test)
+            const filterComplex = `
+[0:v]scale=1920:1080,
+zoompan=z='1.0+0.0004*on':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d=${frameCount}:s=1920x1080,
+format=rgba[bg];
+[1:v]format=rgba,colorchannelmixer=aa=${tintOpacity}[tint];
+[bg][tint]overlay=shortest=1[withtint];
+[withtint]${textFilter}[final]`.replace(/\n/g, '');
+            
+            // CRITICAL: Use proper input order and map [final]
             ffmpegCommand = [
-              '-i', imageFile,
+              '-loop', '1', '-t', sceneDuration.toString(), '-r', '30', '-i', imageFile,  // Input 0: image
+              '-f', 'lavfi', '-t', sceneDuration.toString(), '-i', `color=c=${tintHex}:s=1920x1080:r=30`,  // Input 1: tint
               '-filter_complex', filterComplex,
-              '-map', '[final]',
+              '-map', '[final]',  // CRITICAL: Map only [final]
+              '-t', sceneDuration.toString(),
+              '-r', '30',
               '-c:v', 'libx264',
               '-pix_fmt', 'yuv420p',
-              '-t', scene.durationSec.toString(),
-              '-r', '30',
               '-movflags', '+faststart',
               '-y',
               segmentFile
@@ -400,8 +485,15 @@ export async function assembleStoryboard(scenes: Scene[], options?: { crossfade?
             // Store command for debugging
             sceneMetrics[sceneMetrics.length - 1].ffmpegCommand = ffmpegCommand.join(' ');
             
-            log(`[FFMPEG] Scene ${i + 1} FULL PIPELINE: ffmpeg ${ffmpegCommand.join(' ')}`);
-            log(`[FFMPEG] Filter complex: ${filterComplex}`);
+            // CRITICAL LOGGING
+            log(`\n📊 SCENE ${i + 1} PIPELINE:`);
+            log(`   Duration: ${sceneDuration}s`);
+            log(`   Dimensions: 1920x1080`);
+            log(`   Image: ${imageFile} (${Math.round(fetchedImage?.bytes.length / 1024)}KB)`);
+            log(`   Tint: ${tintHex} @ ${tintOpacity}`);
+            log(`   Filter Complex: ${filterComplex}`);
+            log(`   Map Target: [final] ← CRITICAL`);
+            log(`   Full command: ffmpeg ${ffmpegCommand.join(' ')}`);
             
             // Run with extensive error checking
             const startTime = Date.now();
@@ -468,14 +560,24 @@ export async function assembleStoryboard(scenes: Scene[], options?: { crossfade?
         
         if (!imageFile || !imageDownloaded) {
           // Fallback to solid color background with scene-type tint
-          log(`🎨 Scene ${i + 1}: Using color background with ${tintConfig.theme} theme`);
+          log(`🎨 Scene ${i + 1}: Using color background fallback`);
           
           const bgColor = pickBgColor(i);
           
+          // Add watermark to verify drawtext is working
+          const fallbackText = scene.text || 'FilmMagix';
+          const fallbackTextFilter = createImprovedTextOverlay(
+            fallbackText,
+            aspectConfig.width,
+            aspectConfig.height
+          );
+          
           ffmpegCommand = [
             '-f', 'lavfi',
-            '-i', `color=c=${bgColor}:s=${aspectConfig.width}x${aspectConfig.height}:d=${scene.durationSec}:r=30`,
-            '-vf', textFilter,
+            '-i', `color=c=${bgColor}:s=${aspectConfig.width}x${aspectConfig.height}:d=${sceneDuration}:r=30`,
+            '-vf', fallbackTextFilter,
+            '-t', sceneDuration.toString(),  // Ensure duration
+            '-r', '30',
             '-c:v', 'libx264',
             '-pix_fmt', 'yuv420p',
             '-movflags', '+faststart',
@@ -495,7 +597,7 @@ export async function assembleStoryboard(scenes: Scene[], options?: { crossfade?
           const segmentData = ffmpeg.FS('readFile', segmentFile);
           const segmentSizeKB = Math.round(segmentData.length / 1024);
           log(`✅ Scene ${i + 1} completed successfully: ${segmentSizeKB}KB`);
-          log(`📊 Scene ${i + 1} summary: ${sceneImage.source} image (${sceneImage.fileExists ? 'verified' : 'missing'}), ${tintConfig.theme} tint, ${kenBurnsParams.zoomDirection} zoom ${kenBurnsParams.panDirection} pan`);
+          log(`📊 Scene ${i + 1} summary: ${fetchedImage?.srcName || 'fallback'} image (${fetchedImage ? 'verified' : 'missing'}), ${tintConfig.theme} tint, ${kenBurnsParams.zoomDirection} zoom ${kenBurnsParams.panDirection} pan`);
         } catch (segmentError) {
           log(`❌ Scene ${i + 1} segment file not created: ${segmentError}`);
           throw new Error(`Failed to create segment file for scene ${i + 1}`);

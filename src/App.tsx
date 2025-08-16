@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { assemblePlaceholder, assembleStoryboard, getFFmpeg, getDebugInfo } from "./lib/ffmpegOrchestrator";
+import { assemblePlaceholder, assembleStoryboard, assembleVisualSmokeTest, getFFmpeg, getDebugInfo } from "./lib/ffmpegOrchestrator";
 import type { Scene } from "./lib/ffmpegOrchestrator";
 import type { AspectKey } from "./lib/textLayout";
 import { ASPECT_CONFIGS } from "./lib/textLayout";
@@ -170,6 +170,43 @@ export default function App() {
     }
   };
 
+  const onRunSmokeTest = async () => {
+    setExporting(true);
+    try {
+      console.log("🧪 Starting visual smoke test...");
+      console.time("Smoke Test");
+      
+      const videoBlob = await assembleVisualSmokeTest();
+      
+      console.timeEnd("Smoke Test");
+      
+      // Download the smoke test video
+      const url = URL.createObjectURL(videoBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'visual-smoke-test.mp4';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      console.log("🧪 ✓ Visual smoke test completed successfully!");
+      console.log("File size:", videoBlob.size, "bytes");
+      
+    } catch (error) {
+      console.error("🧪 ❌ Visual smoke test failed:", error);
+      
+      let errorMessage = "Visual smoke test failed. ";
+      if (error instanceof Error) {
+        errorMessage += error.message;
+      }
+      alert(errorMessage);
+      
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div style={{ padding: 24, fontFamily: "Inter, system-ui, Arial" }}>
       <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 16 }}>FilmMagix MVP</h1>
@@ -307,6 +344,22 @@ export default function App() {
               }}
             >
               {exporting ? "Exporting..." : "Export Placeholder MP4"}
+            </button>
+            <button
+              onClick={onRunSmokeTest}
+              disabled={exporting || !ffmpegReady}
+              style={{ 
+                padding: "8px 12px", 
+                borderRadius: 6, 
+                background: "#ff6600",
+                color: "#fff",
+                border: "none",
+                cursor: exporting || !ffmpegReady ? "not-allowed" : "pointer",
+                fontSize: "14px",
+                opacity: exporting || !ffmpegReady ? 0.5 : 1
+              }}
+            >
+              {exporting ? "Running..." : "🧪 Run Visual Smoke Test"}
             </button>
           </div>
           {scenes.map((scene, i) => (
