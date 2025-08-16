@@ -222,6 +222,33 @@ export default function App() {
           <div>Font Size: 32px (FIXED)</div>
           <div>Max Characters: 40 per line</div>
           <div>Max Lines: 3 (PLENTY OF ROOM)</div>
+          
+          {debugInfo.sceneMetrics && debugInfo.sceneMetrics.length > 0 && (
+            <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #ddd" }}>
+              <strong>🎬 Scene Metrics (Last Export):</strong>
+              {debugInfo.sceneMetrics.map((scene: any, idx: number) => (
+                <div key={idx} style={{ marginTop: 6, padding: 6, background: "#f0f0f0", borderRadius: 4 }}>
+                  <div><strong>Scene {scene.scene}:</strong></div>
+                  <div>📸 Image: {scene.imageSource} 
+                    {scene.imageSource === 'ai-generated' && scene.generationTime && 
+                      ` (generated in ${scene.generationTime}ms)`}
+                    {scene.imageSource === 'unsplash' && ' (Unsplash API)'}
+                    {scene.imageSource === 'fallback' && ' (Local fallback)'}
+                  </div>
+                  {scene.aiPrompt && (
+                    <div>🤖 AI Prompt: {scene.aiPrompt.substring(0, 100)}...</div>
+                  )}
+                  <div>🔑 Keywords: {scene.keywords.join(', ')}</div>
+                  <div>🎨 Tint: {scene.tintConfig.theme} ({scene.tintConfig.color})</div>
+                  <div>🎬 Ken Burns: {scene.kenBurnsParams.zoomDirection} zoom, {scene.kenBurnsParams.panDirection} pan</div>
+                  <div>📝 Text: {scene.fontSize}px font, {scene.lineCount} lines, {scene.longestLine} chars max</div>
+                  {scene.textWarnings.length > 0 && (
+                    <div style={{ color: "#cc6600" }}>⚠️ Warnings: {scene.textWarnings.join(', ')}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

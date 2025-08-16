@@ -28,3 +28,7 @@ dist-ssr
 /public/ffmpeg/ffmpeg-core.js
 /public/ffmpeg/ffmpeg-worker.js
 /public/fonts/*.ttf
+
+# Placeholder images (can be regenerated)
+/public/placeholders/*.jpg
+/public/placeholders/*.png
