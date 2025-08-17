@@ -387,17 +387,19 @@ export async function assembleStoryboard(
     const segmentFiles: string[] = [];
     
     // Process scenes with imagery, effects, and text
+    log(`🔄 STARTING SCENE LOOP: ${updatedScenes.length} scenes to process`);
     for (let i = 0; i < updatedScenes.length; i++) {
       const scene = updatedScenes[i];
       
       // CRITICAL: Ensure minimum 5s duration per scene
-      const sceneDuration = Math.max(5, scene.durationSec || 5);
-      log(`⏱️ Scene ${i + 1} duration: ${sceneDuration}s (original: ${scene.durationSec}s)`);
+      const sceneDuration = Math.max(5, sceneDuration || 5);
+      log(`⏱️ Scene ${i + 1} duration: ${sceneDuration}s (original: ${sceneDuration}s)`);
       
       const segmentFile = `seg-${String(i).padStart(3, '0')}.mp4`;
       segmentFiles.push(segmentFile);
       
-      log(`🎬 Generating cinematic scene ${i + 1}/${scenes.length}: ${scene.kind.toUpperCase()}`);
+      log(`🎬 Generating cinematic scene ${i + 1}/${updatedScenes.length}: ${scene.kind.toUpperCase()}`);
+      log(`📋 Scene text: "${scene.text.substring(0, 100)}..."`)
       
       try {
         // 1. Get scene image using relevance-first pipeline
@@ -673,7 +675,7 @@ format=rgba[bg];
                 '-vf', basicFilter,
                 '-c:v', 'libx264',
                 '-pix_fmt', 'yuv420p',
-                '-t', scene.durationSec.toString(),
+                '-t', sceneDuration.toString(),
                 '-r', '30',
                 '-movflags', '+faststart',
                 '-y',
@@ -765,7 +767,7 @@ format=rgba[bg];
         
         await ffmpeg.run(
           '-f', 'lavfi',
-          '-i', `color=c=${bgColor}:s=${aspectConfig.width}x${aspectConfig.height}:d=${scene.durationSec}:r=30`,
+          '-i', `color=c=${bgColor}:s=${aspectConfig.width}x${aspectConfig.height}:d=${sceneDuration}:r=30`,
           '-vf', fallbackTextFilter,
           '-c:v', 'libx264',
           '-pix_fmt', 'yuv420p',

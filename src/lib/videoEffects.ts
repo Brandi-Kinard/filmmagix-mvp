@@ -235,22 +235,25 @@ export function createImprovedTextOverlay(
   // Wrap text to prevent stretching beyond video width
   const wrappedText = wrapText(text, maxCharsPerLine);
   
-  // Simple text escaping for FFmpeg - only escape absolutely necessary characters
+  // Use simple text replacement to avoid complex escaping
   const escapedText = wrappedText
-    .replace(/'/g, "'\"'\"'")  // Replace single quotes with '"'"'
-    .replace(/:/g, '\\:');     // Escape colons only
+    .replace(/['"]/g, '')      // Remove quotes entirely
+    .replace(/:/g, ' - ')      // Replace colons with dashes
+    .replace(/[\\]/g, '');     // Remove backslashes
   
   console.log(`[TEXT] Original: "${text}"`);
   console.log(`[TEXT] Wrapped: "${wrappedText}"`);
   console.log(`[TEXT] Font size: ${fontSize}px, Max chars: ${maxCharsPerLine}`);
   
-  // Create text overlay - use system font when fontFile is 'system'
+  // Create text overlay - try to avoid font issues entirely
   const fontParam = fontFile === 'system' ? 
-    `font=Arial` : // Use system Arial
+    '' : // Skip font specification to use FFmpeg default
     `fontfile=${fontFile}`; // Use custom font file
   
-  return [
-    `drawtext=${fontParam}`,
+  const fontPart = fontParam ? `:${fontParam}` : '';
+  
+  const drawTextParts = [
+    'drawtext',
     `text='${escapedText}'`,
     `fontcolor=white`,
     `fontsize=${fontSize}`,
@@ -262,5 +265,12 @@ export function createImprovedTextOverlay(
     `box=1`,
     `boxcolor=black@0.4`,
     `boxborderw=12`
-  ].join(':');
+  ];
+  
+  // Add font parameter if specified
+  if (fontParam) {
+    drawTextParts.push(fontParam);
+  }
+  
+  return drawTextParts.join(':');
 }
