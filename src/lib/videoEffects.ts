@@ -244,8 +244,13 @@ export function createImprovedTextOverlay(
   console.log(`[TEXT] Wrapped: "${wrappedText}"`);
   console.log(`[TEXT] Font size: ${fontSize}px, Max chars: ${maxCharsPerLine}`);
   
+  // Create text overlay - use system font when fontFile is 'system'
+  const fontParam = fontFile === 'system' ? 
+    `font=Arial` : // Use system Arial
+    `fontfile=${fontFile}`; // Use custom font file
+  
   return [
-    `drawtext=fontfile=${fontFile}`,
+    `drawtext=${fontParam}`,
     `text='${escapedText}'`,
     `fontcolor=white`,
     `fontsize=${fontSize}`,

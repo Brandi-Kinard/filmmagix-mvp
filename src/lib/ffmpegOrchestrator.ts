@@ -187,8 +187,9 @@ async function ensureFont(ffmpeg: any): Promise<void> {
     fontLoaded = true;
     log('✓ Font loaded to /data/font.ttf');
   } catch (error) {
-    log(`✗ Font loading failed: ${error}`);
-    throw new Error(`Failed to load font: ${error}`);
+    log(`⚠️ Font loading failed: ${error}, using system font fallback`);
+    // Don't throw error, just mark as loaded and use system font
+    fontLoaded = true;
   }
 }
 
@@ -572,10 +573,12 @@ export async function assembleStoryboard(
         }
         
         // 8. Create improved text overlay with proper positioning
+        // Use system font instead of custom font to avoid missing font issues
         const textFilter = createImprovedTextOverlay(
           captionLayout.wrappedText,
           aspectConfig.width,
-          aspectConfig.height
+          aspectConfig.height,
+          'system' // Use system font fallback
         );
         
         // 9. Generate video with complete effects pipeline
@@ -1077,7 +1080,7 @@ format=rgba[bg];
               filterComplex = `
                 [1:a]volume=${duckedMusicGain.toFixed(3)},afade=t=in:ss=0:d=${fadeTimes.fadeIn},afade=t=out:st=${fadeTimes.fadeOutStart}:d=${fadeTimes.fadeOut}[music];
                 [2:a]volume=1.0[voice];
-                [music][voice]amix=inputs=2:duration=longest[final_audio]
+                [music][voice]amix=inputs=2:duration=first[final_audio]
               `.trim();
               
               log(`🎵 Auto-duck enabled: Music ducked to ${(duckedMusicGain * 100).toFixed(1)}%, VO at 100%`);
@@ -1086,7 +1089,7 @@ format=rgba[bg];
               filterComplex = `
                 [1:a]volume=${(musicLinearGain * 0.6).toFixed(3)},afade=t=in:ss=0:d=${fadeTimes.fadeIn},afade=t=out:st=${fadeTimes.fadeOutStart}:d=${fadeTimes.fadeOut}[music];
                 [2:a]volume=0.8[voice];
-                [music][voice]amix=inputs=2:duration=longest[final_audio]
+                [music][voice]amix=inputs=2:duration=first[final_audio]
               `.trim();
               
               log(`🎵 No ducking: Music at ${(musicLinearGain * 60).toFixed(1)}%, VO at 80%`);
