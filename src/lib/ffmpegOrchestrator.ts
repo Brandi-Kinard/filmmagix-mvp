@@ -147,7 +147,8 @@ import { getSceneImage, extractKeywords, getTintForKeywords, getTintForSceneType
 import { createCompleteFilter, createTextOverlayFilter, createImprovedTextOverlay, createKenBurnsFilter, createSimplifiedFilter } from './videoEffects';
 import { fetchRelevantSceneImage, type FetchedImage } from './relevantImageSource';
 import { buildVisualQueries } from './visualQuery';
-import { logAudioConfig, calculateFadeTimes, generateWhooshTimestamps, volumeToDb, type AudioConfig } from './audioSystem';
+import { logAudioConfig, calculateFadeTimes, generateWhooshTimestamps, volumeToDb, AUDIO_TRACKS, type AudioConfig } from './audioSystem';
+import { generateVoiceover, checkAudioPermissions, type VoiceoverResult } from './voiceoverSystem';
 
 // Scene type definition
 export type Scene = {
@@ -271,18 +272,85 @@ fix_bounds=1[final]`.replace(/\n/g, '');
 }
 
 /**
+ * Generate voiceover and optionally sync scene durations
+ */
+async function processVoiceover(
+  scenes: Scene[],
+  audioConfig: AudioConfig,
+  onProgress?: (status: string) => void
+): Promise<{ scenes: Scene[]; voiceover?: VoiceoverResult }> {
+  if (!audioConfig.voiceoverEnabled) {
+    return { scenes };
+  }
+
+  if (onProgress) onProgress('Generating voiceover...');
+  
+  try {
+    // Check audio permissions
+    const hasPermissions = await checkAudioPermissions();
+    if (!hasPermissions) {
+      throw new Error('Audio permissions required. Please interact with the page first.');
+    }
+
+    // Generate voiceover for all scene texts
+    const sceneTexts = scenes.map(scene => scene.text);
+    const voiceoverConfig = {
+      voiceId: audioConfig.voiceId,
+      rate: audioConfig.voiceRate,
+      volume: 0.9 // Use high volume for clear capture
+    };
+
+    const voiceover = await generateVoiceover(sceneTexts, voiceoverConfig, (scene, total) => {
+      if (onProgress) onProgress(`Generating voiceover ${scene}/${total}...`);
+    });
+
+    // Optionally sync scene durations to voiceover
+    let updatedScenes = scenes;
+    if (audioConfig.syncScenesToVO) {
+      updatedScenes = scenes.map((scene, index) => {
+        const voDuration = voiceover.sceneDurations[index] || 2.0;
+        const newDuration = Math.max(4.5, Math.ceil(voDuration + 0.4));
+        
+        if (newDuration !== scene.durationSec) {
+          console.log(`[SYNC] Scene ${index + 1}: ${scene.durationSec}s → ${newDuration}s (VO: ${voDuration.toFixed(2)}s)`);
+        }
+        
+        return {
+          ...scene,
+          durationSec: newDuration
+        };
+      });
+    }
+
+    if (onProgress) onProgress(`Voiceover ready: ${voiceover.totalDuration.toFixed(1)}s`);
+    return { scenes: updatedScenes, voiceover };
+    
+  } catch (error) {
+    console.error('[VO] Voiceover generation failed:', error);
+    if (onProgress) onProgress(`Voiceover failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    
+    // Continue without voiceover
+    return { scenes };
+  }
+}
+
+/**
  * Generate a full storyboard video from scenes
  */
 export async function assembleStoryboard(
   scenes: Scene[], 
-  options?: { crossfade?: boolean; aspectRatio?: AspectKey; audioConfig?: any }
+  options?: { crossfade?: boolean; aspectRatio?: AspectKey; audioConfig?: AudioConfig }
 ): Promise<Blob> {
   try {
     const aspectRatio = options?.aspectRatio || 'portrait';
     const aspectConfig = ASPECT_CONFIGS[aspectRatio];
+    const audioConfig = options?.audioConfig || { backgroundTrack: 'none', musicVolume: 65, autoDuck: false, whooshTransitions: false, voiceoverEnabled: false, voiceId: '', voiceRate: 1.0, syncScenesToVO: true };
     
     log(`Starting storyboard assembly with ${scenes.length} scenes...`);
     log(`Using aspect ratio: ${aspectRatio} (${aspectConfig.width}×${aspectConfig.height})`);
+    
+    // Process voiceover first (may modify scene durations)
+    const { scenes: updatedScenes, voiceover } = await processVoiceover(scenes, audioConfig);
     
     const ffmpeg = await getFFmpeg();
     await ensureFont(ffmpeg);
@@ -304,6 +372,8 @@ export async function assembleStoryboard(
       imageExists: boolean;
       imageDimensions?: { width: number; height: number };
       keywords: string[];
+      relevanceScore?: number;
+      contentType?: string;
       aiPrompt?: string;
       generationTime?: number;
       // Effects metrics
@@ -316,8 +386,8 @@ export async function assembleStoryboard(
     const segmentFiles: string[] = [];
     
     // Process scenes with imagery, effects, and text
-    for (let i = 0; i < scenes.length; i++) {
-      const scene = scenes[i];
+    for (let i = 0; i < updatedScenes.length; i++) {
+      const scene = updatedScenes[i];
       
       // CRITICAL: Ensure minimum 5s duration per scene
       const sceneDuration = Math.max(5, scene.durationSec || 5);
@@ -442,7 +512,6 @@ export async function assembleStoryboard(
           imageExists: !!fetchedImage,
           imageDimensions: { width: 1920, height: 1080 },
           keywords: visualQuery.tokens,
-          queryCandidates: visualQuery.candidates,
           relevanceScore: fetchedImage?.relevanceScore || 0,
           contentType: fetchedImage?.contentType || '',
           // Effects metrics
@@ -871,94 +940,212 @@ format=rgba[bg];
       }
     }
     
-    // 🎵 AUDIO MIXING: Add background music if specified
-    const audioConfig: AudioConfig = options?.audioConfig;
-    if (audioConfig && audioConfig.backgroundTrack && audioConfig.backgroundTrack !== 'none') {
+    // 🎵 AUDIO MIXING: Add background music and voiceover if specified
+    const totalDuration = updatedScenes.reduce((total, scene) => total + scene.durationSec, 0);
+    
+    if ((audioConfig.backgroundTrack && audioConfig.backgroundTrack !== 'none') || voiceover) {
       try {
-        log(`🎵 Adding background music: ${audioConfig.backgroundTrack}`);
-        logAudioConfig(audioConfig, scenes.reduce((total, scene) => total + scene.durationSec, 0));
+        log(`🎵 Processing audio: BGM=${audioConfig.backgroundTrack}, VO=${voiceover ? 'enabled' : 'disabled'}`);
+        logAudioConfig(audioConfig, totalDuration);
         
-        // Try to load the audio file
-        const audioFilename = audioConfig.backgroundTrack + '.mp3';
-        const audioPath = `/audio/${audioFilename}`;
+        // Prepare audio files for mixing
+        let backgroundMusic = null;
+        let voiceoverAudio = null;
         
-        try {
-          log(`🎵 Attempting to load audio file: ${audioPath}`);
-          const audioResponse = await fetch(audioPath);
-          
-          if (audioResponse.ok) {
-            const audioBlob = await audioResponse.blob();
-            const audioBuffer = await audioBlob.arrayBuffer();
-            const audioBytes = new Uint8Array(audioBuffer);
+        // Load background music if specified
+        if (audioConfig.backgroundTrack && audioConfig.backgroundTrack !== 'none') {
+          const selectedTrack = AUDIO_TRACKS.find(track => track.id === audioConfig.backgroundTrack);
+          if (selectedTrack?.filename) {
+            const audioPath = `/audio/${selectedTrack.filename}`;
             
-            // Write audio to FFmpeg FS
-            ffmpeg.FS('writeFile', audioFilename, audioBytes);
-            log(`🎵 Audio file loaded: ${Math.round(audioBytes.length / 1024)}KB`);
-            
-            // Calculate total video duration
-            const totalDuration = scenes.reduce((total, scene) => total + scene.durationSec, 0);
-            const fadeTimes = calculateFadeTimes(totalDuration);
-            
-            // Calculate volume gain
-            const volumeGain = volumeToDb(audioConfig.musicVolume);
-            const linearGain = Math.pow(10, volumeGain / 20);
-            
-            log(`🎵 Mixing audio: ${totalDuration}s duration, ${volumeGain.toFixed(1)}dB gain`);
-            
-            // Create new video with audio
-            ffmpeg.FS('writeFile', 'video-only.mp4', data);
-            
-            // Build audio filter
-            let audioFilter = `[1:a]volume=${linearGain.toFixed(3)}`;
-            
-            // Add fade in/out
-            audioFilter += `,afade=t=in:ss=0:d=${fadeTimes.fadeIn}`;
-            audioFilter += `,afade=t=out:st=${fadeTimes.fadeOutStart}:d=${fadeTimes.fadeOut}`;
-            
-            // Optional: Add whoosh SFX (placeholder - would need actual whoosh.mp3)
-            if (audioConfig.whooshTransitions) {
-              log(`🎵 Whoosh transitions enabled (placeholder)`);
-              // This would require loading whoosh-1.mp3 and mixing at transition points
-              // For now, just log that it's enabled
+            try {
+              log(`🎵 Loading background music: ${audioPath}`);
+              const audioResponse = await fetch(audioPath);
+              
+              if (audioResponse.ok) {
+                const audioBlob = await audioResponse.blob();
+                const audioBuffer = await audioBlob.arrayBuffer();
+                const audioBytes = new Uint8Array(audioBuffer);
+                
+                log(`🎵 Audio file details: ${audioBytes.length} bytes, type: ${audioBlob.type}`);
+                
+                ffmpeg.FS('writeFile', selectedTrack.filename, audioBytes);
+                backgroundMusic = selectedTrack.filename;
+                log(`🎵 Background music loaded successfully: ${Math.round(audioBytes.length / 1024)}KB`);
+              } else {
+                log(`❌ Background music HTTP error: ${audioResponse.status} ${audioResponse.statusText} for ${audioPath}`);
+              }
+            } catch (error) {
+              log(`❌ Failed to load background music: ${error}`);
+              console.error('Background music loading error:', error);
             }
+          }
+        }
+        
+        // Load voiceover if available
+        if (voiceover) {
+          try {
+            log(`🎤 Loading voiceover: ${voiceover.totalDuration.toFixed(2)}s`);
+            const voBuffer = await voiceover.audioBlob.arrayBuffer();
+            const voBytes = new Uint8Array(voBuffer);
             
-            audioFilter += '[final_audio]';
+            ffmpeg.FS('writeFile', 'voiceover.wav', voBytes);
+            voiceoverAudio = 'voiceover.wav';
+            log(`🎤 Voiceover loaded: ${Math.round(voBytes.length / 1024)}KB`);
+          } catch (error) {
+            log(`⚠️ Failed to load voiceover: ${error}`);
+          }
+        }
+        
+        // Mix audio if we have any audio sources
+        if (backgroundMusic || voiceoverAudio) {
+          log(`🎵 Starting audio mix: BGM=${backgroundMusic || 'none'}, VO=${voiceoverAudio || 'none'}`);
+          
+          // Save video-only first
+          ffmpeg.FS('writeFile', 'video-only.mp4', data);
+          
+          // Verify video file was written
+          try {
+            const videoSize = ffmpeg.FS('stat', 'video-only.mp4').size;
+            log(`🎵 Video-only file size: ${Math.round(videoSize / 1024)}KB`);
+          } catch (e) {
+            log(`❌ Failed to verify video-only file: ${e}`);
+          }
+          
+          // SIMPLE TEST: Just background music, no voiceover mixing
+          if (backgroundMusic && !voiceoverAudio) {
+            log(`🎵 SIMPLE TEST: Background music only`);
             
-            // Mix video with audio
-            const mixCommand = [
-              '-i', 'video-only.mp4',   // Input 0: video
-              '-i', audioFilename,       // Input 1: audio
-              '-filter_complex', audioFilter,
-              '-map', '0:v',             // Map video from input 0
-              '-map', '[final_audio]',   // Map processed audio
-              '-c:v', 'copy',            // Don't re-encode video
-              '-c:a', 'aac',             // Encode audio as AAC
-              '-b:a', '192k',            // Audio bitrate
-              '-shortest',               // Stop when shortest input ends
+            const fadeTimes = calculateFadeTimes(totalDuration);
+            const musicGain = volumeToDb(audioConfig.musicVolume);
+            const musicLinearGain = Math.pow(10, musicGain / 20);
+            
+            const simpleCommand = [
+              '-i', 'video-only.mp4',
+              '-stream_loop', '-1',
+              '-i', backgroundMusic,
+              '-filter_complex', `[1:a]volume=${musicLinearGain.toFixed(3)},afade=t=in:ss=0:d=${fadeTimes.fadeIn},afade=t=out:st=${fadeTimes.fadeOutStart}:d=${fadeTimes.fadeOut}[final_audio]`,
+              '-map', '0:v',
+              '-map', '[final_audio]',
+              '-c:v', 'copy',
+              '-c:a', 'aac',
+              '-b:a', '192k',
+              '-shortest',
               '-y',
               'final-with-audio.mp4'
             ];
             
-            log(`🎵 FFmpeg audio mix command: ffmpeg ${mixCommand.join(' ')}`);
+            log(`🎵 Simple BGM command: ${simpleCommand.join(' ')}`);
             
-            await ffmpeg.run(...mixCommand);
-            
-            // Read the final video with audio
-            const finalData = ffmpeg.FS('readFile', 'final-with-audio.mp4');
-            log(`🎵 ✅ Audio mixing complete: ${Math.round(finalData.length / 1024)}KB`);
-            
-            // Clean up intermediate files
-            ffmpeg.FS('unlink', 'video-only.mp4');
-            ffmpeg.FS('unlink', audioFilename);
-            ffmpeg.FS('unlink', 'final-with-audio.mp4');
-            
-            data = finalData;
-            
-          } else {
-            log(`⚠️ Audio file not found: ${audioPath} (${audioResponse.status}), using video-only`);
+            try {
+              await ffmpeg.run(...simpleCommand);
+              
+              const finalData = ffmpeg.FS('readFile', 'final-with-audio.mp4');
+              log(`🎵 ✅ Simple BGM mixing complete: ${Math.round(finalData.length / 1024)}KB`);
+              
+              // Clean up
+              ffmpeg.FS('unlink', 'video-only.mp4');
+              ffmpeg.FS('unlink', backgroundMusic);
+              ffmpeg.FS('unlink', 'final-with-audio.mp4');
+              
+              data = finalData;
+              log(`🎵 Data updated successfully, size: ${Math.round(data.length / 1024)}KB`);
+            } catch (simpleError) {
+              log(`❌ Simple BGM mixing failed: ${simpleError}`);
+              console.error('Simple BGM mixing error:', simpleError);
+              throw simpleError;
+            }
           }
-        } catch (audioLoadError) {
-          log(`⚠️ Failed to load audio file: ${audioLoadError}, using video-only`);
+          
+          // Build complex audio mixing filter
+          let filterComplex = '';
+          let inputs = ['-i', 'video-only.mp4'];
+          let inputIndex = 1;
+          
+          if (backgroundMusic && voiceoverAudio) {
+            // Both background music and voiceover
+            inputs.push('-stream_loop', '-1', '-i', backgroundMusic, '-i', voiceoverAudio);
+            
+            const fadeTimes = calculateFadeTimes(totalDuration);
+            const musicGain = volumeToDb(audioConfig.musicVolume);
+            const musicLinearGain = Math.pow(10, musicGain / 20);
+            
+            // Proper voiceover and background music mixing
+            if (audioConfig.autoDuck) {
+              // Auto-ducking: lower music volume when voiceover is playing
+              const duckedMusicGain = musicLinearGain * 0.3; // Duck music to 30% when VO plays
+              filterComplex = `
+                [1:a]volume=${duckedMusicGain.toFixed(3)},afade=t=in:ss=0:d=${fadeTimes.fadeIn},afade=t=out:st=${fadeTimes.fadeOutStart}:d=${fadeTimes.fadeOut}[music];
+                [2:a]volume=1.0[voice];
+                [music][voice]amix=inputs=2:duration=longest[final_audio]
+              `.trim();
+              
+              log(`🎵 Auto-duck enabled: Music ducked to ${(duckedMusicGain * 100).toFixed(1)}%, VO at 100%`);
+            } else {
+              // No ducking: mix at equal levels
+              filterComplex = `
+                [1:a]volume=${(musicLinearGain * 0.6).toFixed(3)},afade=t=in:ss=0:d=${fadeTimes.fadeIn},afade=t=out:st=${fadeTimes.fadeOutStart}:d=${fadeTimes.fadeOut}[music];
+                [2:a]volume=0.8[voice];
+                [music][voice]amix=inputs=2:duration=longest[final_audio]
+              `.trim();
+              
+              log(`🎵 No ducking: Music at ${(musicLinearGain * 60).toFixed(1)}%, VO at 80%`);
+            }
+            
+          } else if (backgroundMusic) {
+            // Background music only
+            inputs.push('-stream_loop', '-1', '-i', backgroundMusic);
+            
+            const fadeTimes = calculateFadeTimes(totalDuration);
+            const musicGain = volumeToDb(audioConfig.musicVolume);
+            const musicLinearGain = Math.pow(10, musicGain / 20);
+            
+            filterComplex = `[1:a]volume=${musicLinearGain.toFixed(3)},afade=t=in:ss=0:d=${fadeTimes.fadeIn},afade=t=out:st=${fadeTimes.fadeOutStart}:d=${fadeTimes.fadeOut}[final_audio]`;
+            
+          } else if (voiceoverAudio) {
+            // Voiceover only
+            inputs.push('-i', voiceoverAudio);
+            filterComplex = '[1:a]volume=1.5[final_audio]'; // Boost voiceover volume when solo
+            log(`🎤 Voiceover-only mode: VO at 150% volume`);
+          }
+          
+          // Execute audio mixing
+          const mixCommand = [
+            ...inputs,
+            '-filter_complex', filterComplex,
+            '-map', '0:v',
+            '-map', '[final_audio]',
+            '-c:v', 'copy',
+            '-c:a', 'aac',
+            '-b:a', '192k',
+            '-shortest',
+            '-y',
+            'final-with-audio.mp4'
+          ];
+          
+          log(`🎵 Full audio mix command: ffmpeg ${mixCommand.join(' ')}`);
+          log(`🎵 Filter complex: ${filterComplex}`);
+          
+          try {
+            await ffmpeg.run(...mixCommand);
+            log(`🎵 ✅ FFmpeg audio mixing completed successfully`);
+          } catch (mixError) {
+            log(`❌ FFmpeg audio mixing failed: ${mixError}`);
+            console.error('FFmpeg audio mixing error:', mixError);
+            throw mixError;
+          }
+          
+          // Read final result
+          const finalData = ffmpeg.FS('readFile', 'final-with-audio.mp4');
+          log(`🎵 ✅ Audio mixing complete: ${Math.round(finalData.length / 1024)}KB`);
+          
+          // Clean up
+          ffmpeg.FS('unlink', 'video-only.mp4');
+          if (backgroundMusic) ffmpeg.FS('unlink', backgroundMusic);
+          if (voiceoverAudio) ffmpeg.FS('unlink', voiceoverAudio);
+          ffmpeg.FS('unlink', 'final-with-audio.mp4');
+          
+          data = finalData;
         }
         
       } catch (audioError) {

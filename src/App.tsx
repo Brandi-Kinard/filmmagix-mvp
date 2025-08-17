@@ -3,7 +3,7 @@ import { assemblePlaceholder, assembleStoryboard, assembleVisualSmokeTest, getFF
 import type { Scene } from "./lib/ffmpegOrchestrator";
 import type { AspectKey } from "./lib/textLayout";
 import { ASPECT_CONFIGS } from "./lib/textLayout";
-import { AUDIO_TRACKS, DEFAULT_AUDIO_CONFIG, type AudioConfig } from "./lib/audioSystem";
+import { AUDIO_TRACKS, DEFAULT_AUDIO_CONFIG, type AudioConfig, getAvailableVoices, getDefaultVoice, isVoiceoverSupported } from "./lib/audioSystem";
 
 // Scene type is now imported from orchestrator
 
@@ -37,8 +37,12 @@ export default function App() {
   const [debugInfo, setDebugInfo] = useState<any>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [audioConfig, setAudioConfig] = useState<AudioConfig>(DEFAULT_AUDIO_CONFIG);
+  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [voiceoverStatus, setVoiceoverStatus] = useState<string>('');
+  // Audio permissions state - currently not used
+  // const [audioPermissionsGranted] = useState(false);
 
-  // Load FFmpeg using guaranteed working approach
+  // Load FFmpeg and initialize speech synthesis
   useEffect(() => {
     console.log("FilmMagix MVP starting...");
     setFfmpegError("FFmpeg: loading...");
@@ -66,6 +70,26 @@ export default function App() {
           setDebugInfo({...info, lastError: error.message});
         });
       });
+
+    // Initialize speech synthesis
+    if (isVoiceoverSupported()) {
+      const loadVoices = () => {
+        const voices = getAvailableVoices();
+        setAvailableVoices(voices);
+        if (voices.length > 0 && !audioConfig.voiceId) {
+          const defaultVoice = getDefaultVoice();
+          setAudioConfig(prev => ({ ...prev, voiceId: defaultVoice }));
+        }
+      };
+      
+      // Load voices immediately and on voices changed
+      loadVoices();
+      speechSynthesis.addEventListener('voiceschanged', loadVoices);
+      
+      return () => {
+        speechSynthesis.removeEventListener('voiceschanged', loadVoices);
+      };
+    }
   }, []);
 
   const onGenerate = () => {
@@ -88,13 +112,23 @@ export default function App() {
     }
     
     setExporting(true);
+    setVoiceoverStatus('');
+    
     try {
       console.log(`Starting storyboard export with ${scenes.length} scenes...`);
       console.time("Storyboard Export");
       
+      // Show voiceover status if enabled
+      if (audioConfig.voiceoverEnabled) {
+        setVoiceoverStatus('Initializing voiceover...');
+      }
+      
       const videoBlob = await assembleStoryboard(scenes, { aspectRatio, audioConfig });
       
       console.timeEnd("Storyboard Export");
+      
+      // Clear voiceover status
+      setVoiceoverStatus('');
       
       // Download the video
       const url = URL.createObjectURL(videoBlob);
@@ -360,17 +394,102 @@ export default function App() {
               </div>
             </div>
 
+            {/* Voiceover Section */}
+            <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid #ddd" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                <h4 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>🎤 Voiceover</h4>
+                {!isVoiceoverSupported() && (
+                  <span style={{ fontSize: 12, color: "#cc6600", fontStyle: "italic" }}>
+                    (Web Speech API not supported)
+                  </span>
+                )}
+              </div>
+              
+              <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 1fr", gap: 16, alignItems: "center" }}>
+                {/* Voiceover Toggle */}
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14 }}>
+                  <input
+                    type="checkbox"
+                    checked={audioConfig.voiceoverEnabled}
+                    disabled={!isVoiceoverSupported()}
+                    onChange={(e) => setAudioConfig({ ...audioConfig, voiceoverEnabled: e.target.checked })}
+                  />
+                  Enable Voiceover
+                </label>
+
+                {/* Voice Selection */}
+                <div>
+                  <label style={{ display: "block", marginBottom: 4, fontSize: 14, fontWeight: 500 }}>
+                    Voice:
+                  </label>
+                  <select
+                    value={audioConfig.voiceId}
+                    disabled={!audioConfig.voiceoverEnabled || availableVoices.length === 0}
+                    onChange={(e) => setAudioConfig({ ...audioConfig, voiceId: e.target.value })}
+                    style={{ width: "100%", padding: "4px 6px", borderRadius: 4, border: "1px solid #ccc", fontSize: 12 }}
+                  >
+                    {availableVoices.map(voice => (
+                      <option key={voice.voiceURI} value={voice.voiceURI}>
+                        {voice.name} ({voice.lang})
+                      </option>
+                    ))}
+                    {availableVoices.length === 0 && (
+                      <option value="">Loading voices...</option>
+                    )}
+                  </select>
+                </div>
+
+                {/* Voice Rate */}
+                <div>
+                  <label style={{ display: "block", marginBottom: 4, fontSize: 14, fontWeight: 500 }}>
+                    Rate: {audioConfig.voiceRate.toFixed(1)}x
+                  </label>
+                  <input
+                    type="range"
+                    min="0.9"
+                    max="1.1"
+                    step="0.05"
+                    value={audioConfig.voiceRate}
+                    disabled={!audioConfig.voiceoverEnabled}
+                    onChange={(e) => setAudioConfig({ ...audioConfig, voiceRate: parseFloat(e.target.value) })}
+                    style={{ width: "100%" }}
+                  />
+                </div>
+              </div>
+
+              {/* Voiceover Options */}
+              <div style={{ marginTop: 8, display: "flex", gap: 20 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14 }}>
+                  <input
+                    type="checkbox"
+                    checked={audioConfig.syncScenesToVO}
+                    disabled={!audioConfig.voiceoverEnabled}
+                    onChange={(e) => setAudioConfig({ ...audioConfig, syncScenesToVO: e.target.checked })}
+                  />
+                  Sync scene durations to VO
+                </label>
+                
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14 }}>
+                  <input
+                    type="checkbox"
+                    checked={audioConfig.autoDuck}
+                    disabled={!audioConfig.voiceoverEnabled}
+                    onChange={(e) => setAudioConfig({ ...audioConfig, autoDuck: e.target.checked })}
+                  />
+                  Auto-duck music under VO
+                </label>
+              </div>
+
+              {/* Voiceover Status */}
+              {voiceoverStatus && (
+                <div style={{ marginTop: 8, padding: 6, background: "#fff3cd", borderRadius: 4, fontSize: 12 }}>
+                  {voiceoverStatus}
+                </div>
+              )}
+            </div>
+
             {/* Audio Options */}
             <div style={{ marginTop: 12, display: "flex", gap: 20 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14 }}>
-                <input
-                  type="checkbox"
-                  checked={audioConfig.autoDuck}
-                  onChange={(e) => setAudioConfig({ ...audioConfig, autoDuck: e.target.checked })}
-                />
-                Auto-duck under voiceover (future)
-              </label>
-              
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14 }}>
                 <input
                   type="checkbox"

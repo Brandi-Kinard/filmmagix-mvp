@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Film, GenerationConfig, Shot, Storyboard, VideoStyle, VideoDuration } from './types';
+import type { Film, GenerationConfig } from './types';
 import { aiService } from './services/ai';
 
 interface AppState {

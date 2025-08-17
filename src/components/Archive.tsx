@@ -1,7 +1,7 @@
 import React from 'react';
 import { Calendar, Play, Trash2 } from 'lucide-react';
 import { useStore } from '../store';
-import { Film } from '../types';
+import type { Film } from '../types';
 
 export const Archive: React.FC = () => {
   const { films } = useStore();

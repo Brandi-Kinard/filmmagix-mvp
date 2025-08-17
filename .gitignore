@@ -32,3 +32,21 @@ dist-ssr
 # Placeholder images (can be regenerated)
 /public/placeholders/*.jpg
 /public/placeholders/*.png
+
+# Large backup and temporary files
+*.bundle
+*.patch
+patches/
+*FIXES*.md
+*AUDIO*.md
+*SIMPLIFIED*.md
+TEST_VIDEO.html
+
+# Large audio files (use smaller files for demo)
+/public/audio/*.wav
+/public/audio/*.mp3
+!/public/audio/README.md
+
+# Temporary development files
+*.tmp
+*.temp

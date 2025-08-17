@@ -1,4 +1,4 @@
-import { GenerationConfig, Shot, Storyboard } from '../types';
+import type { GenerationConfig, Shot, Storyboard } from '../types';
 
 export class AIService {
   private apiKey: string = '';

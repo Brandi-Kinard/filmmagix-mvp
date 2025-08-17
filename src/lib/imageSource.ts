@@ -11,6 +11,7 @@ export interface SceneImage {
   generationTime?: number;
   dimensions?: { width: number; height: number };
   fileExists?: boolean;
+  imageData?: Uint8Array;
 }
 
 export interface KenBurnsParams {

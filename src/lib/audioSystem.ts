@@ -5,6 +5,10 @@ export interface AudioConfig {
   musicVolume: number; // 0-100
   autoDuck: boolean;
   whooshTransitions: boolean;
+  voiceoverEnabled: boolean;
+  voiceId: string;
+  voiceRate: number; // 0.9-1.1
+  syncScenesToVO: boolean;
 }
 
 export interface AudioTrack {
@@ -27,28 +31,28 @@ export const AUDIO_TRACKS: AudioTrack[] = [
   {
     id: 'lofi-1',
     name: 'Lofi Chill',
-    filename: 'lofi-1.mp3',
+    filename: 'lofi-1.wav',
     description: 'Relaxed lofi hip-hop for chill scenes',
     mood: 'lofi'
   },
   {
     id: 'cinematic-1',
     name: 'Epic Cinematic',
-    filename: 'cinematic-1.mp3', 
+    filename: 'cinematic-1.wav', 
     description: 'Epic orchestral for dramatic scenes',
     mood: 'cinematic'
   },
   {
     id: 'tension-1',
     name: 'Suspense',
-    filename: 'tension-1.mp3',
+    filename: 'tension-1.wav',
     description: 'Suspenseful ambient for mystery/thriller',
     mood: 'tension'
   },
   {
     id: 'uplift-1',
     name: 'Uplifting',
-    filename: 'uplift-1.mp3',
+    filename: 'uplift-1.wav',
     description: 'Upbeat motivational for positive endings',
     mood: 'uplift'
   }
@@ -59,7 +63,11 @@ export const DEFAULT_AUDIO_CONFIG: AudioConfig = {
   backgroundTrack: 'lofi-1',
   musicVolume: 65,
   autoDuck: true,
-  whooshTransitions: false
+  whooshTransitions: false,
+  voiceoverEnabled: false,
+  voiceId: '',
+  voiceRate: 1.0,
+  syncScenesToVO: true
 };
 
 /**
@@ -110,6 +118,39 @@ export function generateWhooshTimestamps(sceneDurations: number[]): number[] {
 }
 
 /**
+ * Get available Web Speech API voices
+ */
+export function getAvailableVoices(): SpeechSynthesisVoice[] {
+  if (!('speechSynthesis' in window)) return [];
+  return speechSynthesis.getVoices();
+}
+
+/**
+ * Get a sensible default voice (prefer English, female if available)
+ */
+export function getDefaultVoice(): string {
+  const voices = getAvailableVoices();
+  if (voices.length === 0) return '';
+  
+  // Prefer English voices
+  const englishVoices = voices.filter(v => v.lang.startsWith('en'));
+  if (englishVoices.length > 0) {
+    // Prefer female voices for better clarity
+    const femaleVoice = englishVoices.find(v => v.name.toLowerCase().includes('female') || v.name.toLowerCase().includes('samantha') || v.name.toLowerCase().includes('alex'));
+    return femaleVoice?.voiceURI || englishVoices[0].voiceURI;
+  }
+  
+  return voices[0].voiceURI;
+}
+
+/**
+ * Check if Web Speech API is supported
+ */
+export function isVoiceoverSupported(): boolean {
+  return 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window;
+}
+
+/**
  * Log audio configuration for debugging
  */
 export function logAudioConfig(config: AudioConfig, totalDuration: number): void {
@@ -118,6 +159,12 @@ export function logAudioConfig(config: AudioConfig, totalDuration: number): void
   console.log(`  Music Volume: ${config.musicVolume}% (${volumeToDb(config.musicVolume).toFixed(1)} dB)`);
   console.log(`  Auto Duck: ${config.autoDuck ? 'ON' : 'OFF'}`);
   console.log(`  Whoosh Transitions: ${config.whooshTransitions ? 'ON' : 'OFF'}`);
+  console.log(`  Voiceover: ${config.voiceoverEnabled ? 'ON' : 'OFF'}`);
+  if (config.voiceoverEnabled) {
+    console.log(`    Voice: ${config.voiceId || 'default'}`);
+    console.log(`    Rate: ${config.voiceRate}x`);
+    console.log(`    Sync Scenes: ${config.syncScenesToVO ? 'ON' : 'OFF'}`);
+  }
   
   const fadeTimes = calculateFadeTimes(totalDuration);
   console.log(`  Fade In: ${fadeTimes.fadeIn}s`);
