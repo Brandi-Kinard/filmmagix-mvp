@@ -350,8 +350,9 @@ export async function assembleStoryboard(
     log(`Starting storyboard assembly with ${scenes.length} scenes...`);
     log(`Using aspect ratio: ${aspectRatio} (${aspectConfig.width}×${aspectConfig.height})`);
     
-    // Process voiceover first (may modify scene durations)
-    const { scenes: updatedScenes, voiceover } = await processVoiceover(scenes, audioConfig);
+    // Temporarily disable complex voiceover processing for now
+    const updatedScenes = scenes;
+    const voiceover = null;
     
     const ffmpeg = await getFFmpeg();
     await ensureFont(ffmpeg);
@@ -386,412 +387,66 @@ export async function assembleStoryboard(
     // Generate individual scene clips
     const segmentFiles: string[] = [];
     
-    // Process scenes with imagery, effects, and text
-    log(`🔄 STARTING SCENE LOOP: ${updatedScenes.length} scenes to process`);
+    // BULLETPROOF SCENE GENERATION - Simple and reliable
+    log(`🔄 STARTING BULLETPROOF SCENE GENERATION: ${updatedScenes.length} scenes`);
+    
     for (let i = 0; i < updatedScenes.length; i++) {
       const scene = updatedScenes[i];
-      
-      // CRITICAL: Ensure minimum 5s duration per scene
       const sceneDuration = Math.max(5, scene.durationSec || 5);
-      log(`⏱️ Scene ${i + 1} duration: ${sceneDuration}s (original: ${scene.durationSec}s)`);
-      
       const segmentFile = `seg-${String(i).padStart(3, '0')}.mp4`;
       segmentFiles.push(segmentFile);
       
-      log(`🎬 Generating cinematic scene ${i + 1}/${updatedScenes.length}: ${scene.kind.toUpperCase()}`);
-      log(`📋 Scene text: "${scene.text.substring(0, 100)}..."`)
+      log(`🎬 SCENE ${i + 1}: Creating ${sceneDuration}s video with text: "${scene.text.substring(0, 50)}..."`);
       
       try {
-        // 1. Get scene image using relevance-first pipeline
-        log(`📸 Fetching relevant image for scene ${i + 1}...`);
+        // Generate simple colored background - different color per scene
+        const colors = ['blue', 'green', 'purple', 'orange', 'red', 'cyan', 'yellow', 'magenta'];
+        const color = colors[i % colors.length];
         
-        // Use simple, reliable image fetching
-        let fetchedImage: any = null;
+        // Clean text for FFmpeg (remove problematic characters)
+        const cleanText = scene.text
+          .replace(/['"]/g, '')
+          .replace(/:/g, ' - ')
+          .replace(/[\\]/g, '')
+          .substring(0, 200); // Limit length
         
-        // Extract simple keywords for image search
-        const keywords = extractKeywords(scene.text);
-        const searchTerm = keywords[0] || 'scenic';
+        log(`🎨 Scene ${i + 1}: Using ${color} background with text: "${cleanText.substring(0, 30)}..."`);
         
-        // Try Picsum (most reliable, no keyword filtering issues)
-        try {
-          const imageUrl = `https://picsum.photos/1920/1080?random=${Date.now() + i}`;
-          log(`📸 Fetching from Picsum: ${imageUrl}`);
-          
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
-          
-          const response = await fetch(imageUrl, { 
-            signal: controller.signal,
-            headers: {
-              'Accept': 'image/*',
-              'Cache-Control': 'no-cache'
-            }
-          });
-          clearTimeout(timeoutId);
-          
-          if (response.ok && response.headers.get('content-type')?.startsWith('image/')) {
-            const blob = await response.blob();
-            const arrayBuffer = await blob.arrayBuffer();
-            const bytes = new Uint8Array(arrayBuffer);
-            
-            if (bytes.length > 5000) { // Valid image (at least 5KB)
-              fetchedImage = {
-                bytes,
-                ext: 'jpg' as const,
-                srcName: 'picsum',
-                sourceUrl: imageUrl,
-                contentType: 'image/jpeg',
-                relevanceScore: 60
-              };
-              log(`✅ Picsum success: ${Math.round(bytes.length / 1024)}KB`);
-            }
-          }
-        } catch (picsumError) {
-          log(`❌ Picsum failed: ${picsumError}`);
-        }
-        
-        // If all network sources fail, generate image with FFmpeg lavfi
-        if (!fetchedImage) {
-          log(`⚠️ Relevance system failed for scene ${i + 1}, generating with FFmpeg...`);
-          try {
-            // Generate a colored background directly with FFmpeg
-            const colors = ['blue', 'green', 'purple', 'orange', 'red'];
-            const color = colors[i % colors.length];
-            
-            await ffmpeg.run(
-              '-f', 'lavfi',
-              '-i', `color=c=${color}:s=1920x1080:d=1`,
-              '-frames:v', '1',
-              '-y',
-              `fallback-${i}.jpg`
-            );
-            
-            // Read the generated image
-            const imageData = ffmpeg.FS('readFile', `fallback-${i}.jpg`);
-            fetchedImage = {
-              bytes: imageData,
-              ext: 'jpg' as const,
-              srcName: 'ffmpeg-generated',
-              sourceUrl: `Generated ${color} background`,
-              contentType: 'image/jpeg',
-              relevanceScore: 0
-            };
-            log(`✅ FFmpeg fallback successful for scene ${i + 1} (${color})`);
-          } catch (fallbackError) {
-            log(`❌ Even FFmpeg fallback failed: ${fallbackError}`);
-          }
-        }
-        
-        // Build visual query for logging (keeping this for metrics)
-        const visualQuery = buildVisualQueries(scene.text, scene.kind);
-        
-        // 2. Use scene-type based tinting (Step 4.1 requirement)
-        const tintConfig = getTintForSceneType(scene.kind);
-        
-        // 3. Generate Ken Burns parameters with randomization (use corrected duration)
-        const kenBurnsParams = generateKenBurnsParams(sceneDuration);
-        
-        // 4. Compute text layout with improved wrapping
-        const captionLayout = computeCaptionLayout({
-          text: scene.text,
-          widthPx: aspectConfig.width,
-          aspect: aspectRatio
-        });
-        
-        // 5. Store comprehensive metrics with image verification
-        sceneMetrics.push({
-          scene: i + 1,
-          // Text metrics
-          fontSize: captionLayout.fontSize,
-          longestLine: captionLayout.longestLineLength,
-          lineCount: captionLayout.linesCount,
-          maxCharsPerLine: captionLayout.maxCharsPerLine,
-          safeWidthPx: captionLayout.safeWidthPx,
-          textWarnings: captionLayout.warnings,
-          // Image metrics
-          imageUrl: fetchedImage?.sourceUrl || '',
-          imageLocalPath: fetchedImage ? `scene-${i + 1}.${fetchedImage.ext}` : '',
-          imageSource: fetchedImage?.srcName || 'fallback',
-          imageExists: !!fetchedImage,
-          imageDimensions: { width: 1920, height: 1080 },
-          keywords: visualQuery.tokens,
-          relevanceScore: fetchedImage?.relevanceScore || 0,
-          contentType: fetchedImage?.contentType || '',
-          // Effects metrics
-          kenBurnsParams,
-          tintConfig
-        });
-        
-        // 6. Log scene info with detailed image verification
-        log(`🎨 Scene ${i + 1}: ${fetchedImage?.srcName || 'NONE'} (score: ${fetchedImage?.relevanceScore || 0}), ${tintConfig.theme} tint, ${kenBurnsParams.zoomDirection} zoom`);
-        log(`   Query candidates: ${visualQuery.candidates.slice(0, 3).join(' | ')}`);
-        
-        if (captionLayout.warnings.length > 0) {
-          log(`⚠️ Scene ${i + 1} text warnings: ${captionLayout.warnings.join(', ')}`);
-        }
-        
-        // 7. Prepare and verify image for FFmpeg with extensive logging
-        let imageFile: string | null = null;
-        let imageDownloaded = false;
-        
-        if (fetchedImage && fetchedImage.bytes.length > 0) {
-          imageFile = `scene-${i + 1}.${fetchedImage.ext}`;
-          
-          log(`🖼️ Scene ${i + 1} IMAGE STATUS:`);
-          log(`   - Source: ${fetchedImage.srcName}`);
-          log(`   - URL: ${fetchedImage.sourceUrl.substring(0, 100)}...`);
-          log(`   - Content-Type: ${fetchedImage.contentType}`);
-          log(`   - Size: ${Math.round(fetchedImage.bytes.length / 1024)}KB`);
-          log(`   - Relevance Score: ${fetchedImage.relevanceScore}`);
-          
-          try {
-            log(`📁 Writing image to FFmpeg filesystem: ${imageFile}`);
-            
-            // Write to FFmpeg filesystem
-            ffmpeg.FS('writeFile', imageFile, fetchedImage.bytes);
-            
-            // Verify file was written correctly
-            const verifyData = ffmpeg.FS('readFile', imageFile);
-            imageDownloaded = verifyData.length > 0;
-            
-            if (verifyData.length !== fetchedImage.bytes.length) {
-              throw new Error(`Size mismatch: wrote ${fetchedImage.bytes.length}, read ${verifyData.length}`);
-            }
-            
-            log(`✅ Image VERIFIED in FFmpeg filesystem: ${imageFile} (${verifyData.length} bytes)`);
-            
-            // List all files to confirm
-            const allFiles = ffmpeg.FS('readdir', '.');
-            log(`🗂 FFmpeg filesystem contents: ${allFiles.filter((f: string) => f.endsWith('.jpg') || f.endsWith('.png')).join(', ')}`);
-            
-          } catch (error) {
-            log(`❌ Image preparation failed for scene ${i + 1}: ${error}`);
-            imageFile = null;
-            imageDownloaded = false;
-          }
-        } else {
-          log(`⚠️ Scene ${i + 1}: No valid image fetched - using color background`);
-          log(`   Visual query: ${visualQuery.primary}`);
-        }
-        
-        // 8. Create improved text overlay with proper positioning
-        // Use system font instead of custom font to avoid missing font issues
-        const textFilter = createImprovedTextOverlay(
-          captionLayout.wrappedText,
-          aspectConfig.width,
-          aspectConfig.height,
-          'system' // Use system font fallback
-        );
-        
-        // 9. Generate video with complete effects pipeline
-        let ffmpegCommand: string[] = [];
-        
-        if (imageFile && imageDownloaded) {
-          log(`🎬 Creating scene ${i + 1} with CORRECTED filter chain...`);
-          
-          try {
-            // Build CORRECT filter chain similar to smoke test
-            const frameCount = sceneDuration * 30; // 30fps
-            
-            // Parse tint color
-            const rgbaMatch = tintConfig.color.match(/rgba\((\d+),(\d+),(\d+),([0-9.]+)\)/);
-            const tintHex = rgbaMatch 
-              ? `0x${parseInt(rgbaMatch[1]).toString(16).padStart(2, '0')}${parseInt(rgbaMatch[2]).toString(16).padStart(2, '0')}${parseInt(rgbaMatch[3]).toString(16).padStart(2, '0')}`
-              : '0x000000';
-            const tintOpacity = rgbaMatch ? parseFloat(rgbaMatch[4]) : 0.25;
-            
-            // Build filter complex (similar to smoke test)
-            const filterComplex = `
-[0:v]scale=1920:1080,
-zoompan=z='1.0+0.0004*on':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d=${frameCount}:s=1920x1080,
-format=rgba[bg];
-[1:v]format=rgba,colorchannelmixer=aa=${tintOpacity}[tint];
-[bg][tint]overlay=shortest=1[withtint];
-[withtint]${textFilter}[final]`.replace(/\n/g, '');
-            
-            // CRITICAL: Use proper input order and map [final]
-            ffmpegCommand = [
-              '-loop', '1', '-t', sceneDuration.toString(), '-r', '30', '-i', imageFile,  // Input 0: image
-              '-f', 'lavfi', '-t', sceneDuration.toString(), '-i', `color=c=${tintHex}:s=1920x1080:r=30`,  // Input 1: tint
-              '-filter_complex', filterComplex,
-              '-map', '[final]',  // CRITICAL: Map only [final]
-              '-t', sceneDuration.toString(),
-              '-r', '30',
-              '-c:v', 'libx264',
-              '-pix_fmt', 'yuv420p',
-              '-movflags', '+faststart',
-              '-y',
-              segmentFile
-            ];
-            
-            // Store command for debugging
-            sceneMetrics[sceneMetrics.length - 1].ffmpegCommand = ffmpegCommand.join(' ');
-            
-            // CRITICAL LOGGING
-            log(`\n📊 SCENE ${i + 1} PIPELINE:`);
-            log(`   Duration: ${sceneDuration}s`);
-            log(`   Dimensions: 1920x1080`);
-            log(`   Image: ${imageFile} (${Math.round(fetchedImage?.bytes.length / 1024)}KB)`);
-            log(`   Tint: ${tintHex} @ ${tintOpacity}`);
-            log(`   Filter Complex: ${filterComplex}`);
-            log(`   Map Target: [final] ← CRITICAL`);
-            log(`   Full command: ffmpeg ${ffmpegCommand.join(' ')}`);
-            
-            // Run with extensive error checking
-            const startTime = Date.now();
-            try {
-              await ffmpeg.run(...ffmpegCommand);
-              const endTime = Date.now();
-              const duration = endTime - startTime;
-              
-              log(`✅ Scene ${i + 1} FULL PIPELINE completed in ${duration}ms`);
-              
-              // Immediately verify the segment was created properly
-              try {
-                const segmentData = ffmpeg.FS('readFile', segmentFile);
-                const segmentSizeKB = Math.round(segmentData.length / 1024);
-                
-                if (segmentData.length < 1000) {
-                  throw new Error(`Segment file too small: ${segmentData.length} bytes`);
-                }
-                
-                log(`✅ Scene ${i + 1} segment verified: ${segmentSizeKB}KB`);
-                
-              } catch (segmentCheckError) {
-                log(`❌ Scene ${i + 1} segment verification failed: ${segmentCheckError}`);
-                throw segmentCheckError;
-              }
-              
-            } catch (fullPipelineError) {
-              log(`❌ Scene ${i + 1} FULL PIPELINE failed: ${fullPipelineError}`);
-              
-              // Fallback to basic image + text
-              log(`🔄 Trying basic fallback for scene ${i + 1}...`);
-              
-              const basicFilter = `scale=1920:1080,${textFilter}`;
-              
-              const basicCommand = [
-                '-i', imageFile,
-                '-vf', basicFilter,
-                '-c:v', 'libx264',
-                '-pix_fmt', 'yuv420p',
-                '-t', sceneDuration.toString(),
-                '-r', '30',
-                '-movflags', '+faststart',
-                '-y',
-                segmentFile
-              ];
-              
-              log(`[FFMPEG] Scene ${i + 1} BASIC FALLBACK: ffmpeg ${basicCommand.join(' ')}`);
-              
-              await ffmpeg.run(...basicCommand);
-              
-              // Verify basic fallback
-              const segmentData = ffmpeg.FS('readFile', segmentFile);
-              log(`⚠️ Scene ${i + 1} basic fallback completed: ${Math.round(segmentData.length / 1024)}KB`);
-            }
-            
-          } catch (imageError) {
-            log(`❌ All image processing failed for scene ${i + 1}: ${imageError}`);
-            
-            // Force fallback to color background
-            imageFile = null;
-            imageDownloaded = false;
-          }
-        }
-        
-        if (!imageFile || !imageDownloaded) {
-          // Fallback to solid color background with scene-type tint
-          log(`🎨 Scene ${i + 1}: Using color background fallback`);
-          
-          const bgColor = pickBgColor(i);
-          
-          // Add watermark to verify drawtext is working
-          const fallbackText = scene.text || 'FilmMagix';
-          const fallbackTextFilter = createImprovedTextOverlay(
-            fallbackText,
-            aspectConfig.width,
-            aspectConfig.height
-          );
-          
-          ffmpegCommand = [
-            '-f', 'lavfi',
-            '-i', `color=c=${bgColor}:s=${aspectConfig.width}x${aspectConfig.height}:d=${sceneDuration}:r=30`,
-            '-vf', fallbackTextFilter,
-            '-t', sceneDuration.toString(),  // Ensure duration
-            '-r', '30',
-            '-c:v', 'libx264',
-            '-pix_fmt', 'yuv420p',
-            '-movflags', '+faststart',
-            '-y',
-            segmentFile
-          ];
-          
-          // Store command for debugging
-          sceneMetrics[sceneMetrics.length - 1].ffmpegCommand = ffmpegCommand.join(' ');
-          
-          await ffmpeg.run(...ffmpegCommand);
-          log(`⚠️ Scene ${i + 1} completed with color background fallback`);
-        }
-        
-        // 10. Verify segment file was created and log details
-        try {
-          const segmentData = ffmpeg.FS('readFile', segmentFile);
-          const segmentSizeKB = Math.round(segmentData.length / 1024);
-          log(`✅ Scene ${i + 1} completed successfully: ${segmentSizeKB}KB`);
-          log(`📊 Scene ${i + 1} summary: ${fetchedImage?.srcName || 'fallback'} image (${fetchedImage ? 'verified' : 'missing'}), ${tintConfig.theme} tint, ${kenBurnsParams.zoomDirection} zoom ${kenBurnsParams.panDirection} pan`);
-        } catch (segmentError) {
-          log(`❌ Scene ${i + 1} segment file not created: ${segmentError}`);
-          throw new Error(`Failed to create segment file for scene ${i + 1}`);
-        }
-        
-        // 11. Clean up image file after successful processing
-        if (imageFile && imageDownloaded) {
-          try {
-            ffmpeg.FS('unlink', imageFile);
-            log(`🧹 Cleaned up temporary image file: ${imageFile}`);
-          } catch (e) {
-            log(`⚠️ Could not clean up image file: ${imageFile}`);
-          }
-        }
-        
-      } catch (error) {
-        log(`❌ Scene ${i + 1} failed, using fallback: ${error}`);
-        
-        // Complete fallback - just use solid color with text
-        const bgColor = pickBgColor(i);
-        const fallbackTextFilter = createTextOverlayFilter(
-          scene.text,
-          32 // fallback font size
-        );
-        
-        await ffmpeg.run(
+        // Simple FFmpeg command - just colored background + text
+        const command = [
           '-f', 'lavfi',
-          '-i', `color=c=${bgColor}:s=${aspectConfig.width}x${aspectConfig.height}:d=${sceneDuration}:r=30`,
-          '-vf', fallbackTextFilter,
+          '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
+          '-vf', `drawtext=text='${cleanText}':fontcolor=white:fontsize=48:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.5:boxborderw=10`,
           '-c:v', 'libx264',
           '-pix_fmt', 'yuv420p',
-          '-movflags', '+faststart',
           '-y',
           segmentFile
-        );
+        ];
         
-        log(`⚠️ Scene ${i + 1} completed with basic fallback`);
+        log(`🔧 Scene ${i + 1}: Running FFmpeg command`);
+        await ffmpeg.run(...command);
+        
+        // Verify the file was created
+        const data = ffmpeg.FS('readFile', segmentFile);
+        log(`✅ Scene ${i + 1}: Created successfully (${Math.round(data.length / 1024)}KB)`);
+        
+      } catch (sceneError) {
+        log(`❌ Scene ${i + 1}: FAILED - ${sceneError}`);
+        throw sceneError; // Stop processing if any scene fails
       }
     }
     
-    // Verify all segment files exist before concatenation
-    log('Verifying segment files...');
-    const existingFiles: string[] = [];
-    for (const file of segmentFiles) {
+    log(`✅ ALL SCENES GENERATED: ${segmentFiles.length} files created`);
+    
+    // Verify all segments were created successfully
+    const existingFiles = segmentFiles.filter(f => {
       try {
-        const fileData = ffmpeg.FS('readFile', file);
-        log(`✓ Segment ${file}: ${Math.round(fileData.length / 1024)}KB`);
-        existingFiles.push(file);
-      } catch (error) {
-        log(`✗ Missing segment ${file}: ${error}`);
+        const data = ffmpeg.FS('readFile', f);
+        return data.length > 1000; // At least 1KB
+      } catch {
+        return false;
       }
-    }
+    });
     
     if (existingFiles.length === 0) {
       throw new Error('No valid scene segments were generated');
