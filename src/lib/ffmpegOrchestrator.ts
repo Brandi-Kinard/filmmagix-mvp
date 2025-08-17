@@ -392,8 +392,8 @@ export async function assembleStoryboard(
       const scene = updatedScenes[i];
       
       // CRITICAL: Ensure minimum 5s duration per scene
-      const sceneDuration = Math.max(5, sceneDuration || 5);
-      log(`⏱️ Scene ${i + 1} duration: ${sceneDuration}s (original: ${sceneDuration}s)`);
+      const sceneDuration = Math.max(5, scene.durationSec || 5);
+      log(`⏱️ Scene ${i + 1} duration: ${sceneDuration}s (original: ${scene.durationSec}s)`);
       
       const segmentFile = `seg-${String(i).padStart(3, '0')}.mp4`;
       segmentFiles.push(segmentFile);
