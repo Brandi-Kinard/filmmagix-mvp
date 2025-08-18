@@ -426,58 +426,19 @@ export async function assembleStoryboard(
         const colors = ['blue', 'green', 'purple', 'orange', 'red', 'cyan', 'yellow', 'magenta'];
         const color = colors[i % colors.length];
         
-        // Clean text for FFmpeg (remove problematic characters)
+        // Clean text for logging
         const cleanText = scene.text
           .replace(/['"]/g, '')
           .replace(/:/g, ' - ')
           .replace(/[\\]/g, '')
           .substring(0, 200); // Limit length
         
-        log(`🎨 Scene ${i + 1}: Using ${color} background with text: "${cleanText.substring(0, 30)}..."`);
+        log(`🎨 Scene ${i + 1}: Using ${color} background`);
         
-        // Add text using drawtext filter with minimal escaping
-        // Wrap text to fit on screen
-        const wrappedText = wrapTextSimple(cleanText, 40); // 40 chars per line
-        
-        // Generate simple TTS audio for this scene using Web Speech API
-        let audioFile = null;
-        try {
-          // Use browser's speech synthesis
-          const utterance = new SpeechSynthesisUtterance(cleanText);
-          utterance.rate = 0.9; // Slightly slower for clarity
-          
-          // Create a simple placeholder audio since we can't easily capture browser TTS in FFmpeg
-          // For now, generate a simple tone as placeholder
-          const toneCommand = [
-            '-f', 'lavfi',
-            '-i', `sine=frequency=440:duration=${sceneDuration}`,
-            '-af', 'volume=0.1',
-            '-y',
-            `audio-${i}.wav`
-          ];
-          await ffmpeg.run(...toneCommand);
-          audioFile = `audio-${i}.wav`;
-          log(`🔊 Scene ${i + 1}: Generated placeholder audio`);
-        } catch (audioError) {
-          log(`⚠️ Scene ${i + 1}: Audio generation skipped: ${audioError}`);
-        }
-        
-        // FFmpeg command with colored background, text overlay, and optional audio
-        command = audioFile ? [
+        // Simple command - just colored background, no text yet
+        command = [
           '-f', 'lavfi',
           '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
-          '-i', audioFile,
-          '-vf', `drawtext=text='${wrappedText}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.6:boxborderw=15`,
-          '-c:v', 'libx264',
-          '-c:a', 'aac',
-          '-pix_fmt', 'yuv420p',
-          '-shortest',
-          '-y',
-          segmentFile
-        ] : [
-          '-f', 'lavfi',
-          '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
-          '-vf', `drawtext=text='${wrappedText}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.6:boxborderw=15`,
           '-c:v', 'libx264',
           '-pix_fmt', 'yuv420p',
           '-y',
