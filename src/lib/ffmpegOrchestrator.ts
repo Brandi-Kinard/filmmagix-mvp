@@ -387,6 +387,27 @@ export async function assembleStoryboard(
     // Generate individual scene clips
     const segmentFiles: string[] = [];
     
+    // Simple text wrapping function
+    function wrapTextSimple(text: string, maxCharsPerLine: number): string {
+      const words = text.split(' ');
+      const lines: string[] = [];
+      let currentLine = '';
+      
+      for (const word of words) {
+        const testLine = currentLine ? `${currentLine} ${word}` : word;
+        if (testLine.length <= maxCharsPerLine) {
+          currentLine = testLine;
+        } else {
+          if (currentLine) lines.push(currentLine);
+          currentLine = word;
+        }
+      }
+      if (currentLine) lines.push(currentLine);
+      
+      // Join lines with newlines for FFmpeg
+      return lines.join('\\n');
+    }
+    
     // BULLETPROOF SCENE GENERATION - Simple and reliable
     log(`🔄 STARTING BULLETPROOF SCENE GENERATION: ${updatedScenes.length} scenes`);
     
@@ -412,10 +433,49 @@ export async function assembleStoryboard(
         
         log(`🎨 Scene ${i + 1}: Using ${color} background with text: "${cleanText.substring(0, 30)}..."`);
         
-        // ULTRA-SIMPLE FFmpeg command - just colored background first
-        const command = [
+        // Add text using drawtext filter with minimal escaping
+        // Wrap text to fit on screen
+        const wrappedText = wrapTextSimple(cleanText, 40); // 40 chars per line
+        
+        // Generate simple TTS audio for this scene using Web Speech API
+        let audioFile = null;
+        try {
+          // Use browser's speech synthesis
+          const utterance = new SpeechSynthesisUtterance(cleanText);
+          utterance.rate = 0.9; // Slightly slower for clarity
+          
+          // Create a simple placeholder audio since we can't easily capture browser TTS in FFmpeg
+          // For now, generate a simple tone as placeholder
+          const toneCommand = [
+            '-f', 'lavfi',
+            '-i', `sine=frequency=440:duration=${sceneDuration}`,
+            '-af', 'volume=0.1',
+            '-y',
+            `audio-${i}.wav`
+          ];
+          await ffmpeg.run(...toneCommand);
+          audioFile = `audio-${i}.wav`;
+          log(`🔊 Scene ${i + 1}: Generated placeholder audio`);
+        } catch (audioError) {
+          log(`⚠️ Scene ${i + 1}: Audio generation skipped: ${audioError}`);
+        }
+        
+        // FFmpeg command with colored background, text overlay, and optional audio
+        const command = audioFile ? [
           '-f', 'lavfi',
           '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
+          '-i', audioFile,
+          '-vf', `drawtext=text='${wrappedText}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.6:boxborderw=15`,
+          '-c:v', 'libx264',
+          '-c:a', 'aac',
+          '-pix_fmt', 'yuv420p',
+          '-shortest',
+          '-y',
+          segmentFile
+        ] : [
+          '-f', 'lavfi',
+          '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
+          '-vf', `drawtext=text='${wrappedText}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.6:boxborderw=15`,
           '-c:v', 'libx264',
           '-pix_fmt', 'yuv420p',
           '-y',
