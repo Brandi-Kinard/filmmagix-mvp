@@ -419,6 +419,8 @@ export async function assembleStoryboard(
       
       log(`🎬 SCENE ${i + 1}: Creating ${sceneDuration}s video with text: "${scene.text.substring(0, 50)}..."`);
       
+      let command: string[] = []; // Declare command outside try block
+      
       try {
         // Generate simple colored background - different color per scene
         const colors = ['blue', 'green', 'purple', 'orange', 'red', 'cyan', 'yellow', 'magenta'];
@@ -461,7 +463,7 @@ export async function assembleStoryboard(
         }
         
         // FFmpeg command with colored background, text overlay, and optional audio
-        const command = audioFile ? [
+        command = audioFile ? [
           '-f', 'lavfi',
           '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
           '-i', audioFile,
