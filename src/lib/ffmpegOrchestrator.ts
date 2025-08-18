@@ -350,9 +350,26 @@ export async function assembleStoryboard(
     log(`Starting storyboard assembly with ${scenes.length} scenes...`);
     log(`Using aspect ratio: ${aspectRatio} (${aspectConfig.width}×${aspectConfig.height})`);
     
-    // Temporarily disable complex voiceover processing for now
-    const updatedScenes = scenes;
-    const voiceover = null;
+    // Process voiceover if enabled
+    let updatedScenes = scenes;
+    let voiceover = null;
+    
+    if (audioConfig.voiceoverEnabled) {
+      try {
+        const voResult = await processVoiceover(scenes, audioConfig, (status) => {
+          console.log(`[VO Progress] ${status}`);
+        });
+        updatedScenes = voResult.scenes;
+        voiceover = voResult.voiceover;
+        
+        if (voiceover) {
+          log(`✅ Voiceover generated: ${voiceover.totalDuration.toFixed(2)}s total duration`);
+          log(`📊 Scene durations: ${voiceover.sceneDurations.map((d, i) => `Scene ${i+1}: ${d.toFixed(2)}s`).join(', ')}`);
+        }
+      } catch (error) {
+        log(`⚠️ Voiceover generation failed: ${error}, continuing without VO`);
+      }
+    }
     
     const ffmpeg = await getFFmpeg();
     await ensureFont(ffmpeg);
@@ -426,19 +443,27 @@ export async function assembleStoryboard(
         const colors = ['blue', 'green', 'purple', 'orange', 'red', 'cyan', 'yellow', 'magenta'];
         const color = colors[i % colors.length];
         
-        // Clean text for logging
-        const cleanText = scene.text
-          .replace(/['"]/g, '')
-          .replace(/:/g, ' - ')
-          .replace(/[\\]/g, '')
-          .substring(0, 200); // Limit length
+        // Prepare text for FFmpeg drawtext filter
+        const wrappedText = wrapTextSimple(scene.text, 50); // 50 chars per line for 1920px width
         
-        log(`🎨 Scene ${i + 1}: Using ${color} background`);
+        // Escape text for FFmpeg - remove problematic characters
+        const escapedText = wrappedText
+          .replace(/[:]/g, '\\:')     // Escape colons
+          .replace(/'/g, '\\\'')      // Escape single quotes
+          .replace(/"/g, '\\\"')     // Escape double quotes
+          .replace(/,/g, '\\,')       // Escape commas
+          .replace(/\[/g, '\\\[')      // Escape brackets
+          .replace(/\]/g, '\\\]');
         
-        // Simple command - just colored background, no text yet
+        log(`🎨 Scene ${i + 1}: Using ${color} background with text: "${scene.text.substring(0, 50)}..."`);
+        
+        // Create colored background with text overlay using drawtext filter
+        const textFilter = `drawtext=text='${escapedText}':fontcolor=white:fontsize=56:x=(w-text_w)/2:y=h*0.8:borderw=3:bordercolor=black`;
+        
         command = [
           '-f', 'lavfi',
           '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
+          '-vf', textFilter,
           '-c:v', 'libx264',
           '-pix_fmt', 'yuv420p',
           '-y',
