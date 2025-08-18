@@ -412,26 +412,34 @@ export async function assembleStoryboard(
         
         log(`🎨 Scene ${i + 1}: Using ${color} background with text: "${cleanText.substring(0, 30)}..."`);
         
-        // Simple FFmpeg command - just colored background + text
+        // ULTRA-SIMPLE FFmpeg command - just colored background first
         const command = [
           '-f', 'lavfi',
           '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
-          '-vf', `drawtext=text='${cleanText}':fontcolor=white:fontsize=48:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.5:boxborderw=10`,
           '-c:v', 'libx264',
           '-pix_fmt', 'yuv420p',
           '-y',
           segmentFile
         ];
         
-        log(`🔧 Scene ${i + 1}: Running FFmpeg command`);
+        log(`🔧 Scene ${i + 1}: Running FFmpeg command: ${command.join(' ')}`);
         await ffmpeg.run(...command);
         
         // Verify the file was created
-        const data = ffmpeg.FS('readFile', segmentFile);
-        log(`✅ Scene ${i + 1}: Created successfully (${Math.round(data.length / 1024)}KB)`);
+        try {
+          const data = ffmpeg.FS('readFile', segmentFile);
+          if (data.length < 1000) {
+            throw new Error(`Generated file too small: ${data.length} bytes`);
+          }
+          log(`✅ Scene ${i + 1}: Created successfully (${Math.round(data.length / 1024)}KB)`);
+        } catch (readError) {
+          log(`❌ Scene ${i + 1}: File not created or corrupted: ${readError}`);
+          throw readError;
+        }
         
       } catch (sceneError) {
-        log(`❌ Scene ${i + 1}: FAILED - ${sceneError}`);
+        log(`❌ Scene ${i + 1}: COMPLETE FAILURE - ${sceneError}`);
+        log(`❌ Scene ${i + 1}: Command was: ${command.join(' ')}`);
         throw sceneError; // Stop processing if any scene fails
       }
     }
