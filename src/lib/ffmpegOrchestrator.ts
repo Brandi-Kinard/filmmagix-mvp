@@ -425,7 +425,7 @@ export async function assembleStoryboard(
       return lines.join('\\n');
     }
     
-    // BULLETPROOF SCENE GENERATION - Simple and reliable
+    // BULLETPROOF SCENE GENERATION - Using proven approach
     log(`🔄 STARTING BULLETPROOF SCENE GENERATION: ${updatedScenes.length} scenes`);
     
     for (let i = 0; i < updatedScenes.length; i++) {
@@ -440,32 +440,28 @@ export async function assembleStoryboard(
       
       try {
         // Generate simple colored background - different color per scene
-        const colors = ['blue', 'green', 'purple', 'orange', 'red', 'cyan', 'yellow', 'magenta'];
+        const colors = ['0x4169E1', '0x228B22', '0x9370DB', '0xFF8C00', '0xDC143C', '0x00CED1', '0xFFD700', '0xFF1493'];
         const color = colors[i % colors.length];
         
-        // Prepare text for FFmpeg drawtext filter
-        const wrappedText = wrapTextSimple(scene.text, 50); // 50 chars per line for 1920px width
+        // Write text to a temporary file to avoid escaping issues
+        const textFile = `text-${i}.txt`;
+        const encoder = new TextEncoder();
+        const wrappedText = wrapTextSimple(scene.text, 45); // Conservative wrap for safety
+        ffmpeg.FS('writeFile', textFile, encoder.encode(wrappedText));
         
-        // Escape text for FFmpeg - remove problematic characters
-        const escapedText = wrappedText
-          .replace(/[:]/g, '\\:')     // Escape colons
-          .replace(/'/g, '\\\'')      // Escape single quotes
-          .replace(/"/g, '\\\"')     // Escape double quotes
-          .replace(/,/g, '\\,')       // Escape commas
-          .replace(/\[/g, '\\\[')      // Escape brackets
-          .replace(/\]/g, '\\\]');
+        log(`🎨 Scene ${i + 1}: Using color ${color} with text file: ${textFile}`);
         
-        log(`🎨 Scene ${i + 1}: Using ${color} background with text: "${scene.text.substring(0, 50)}..."`);
+        // Use textfile approach which is more reliable than inline text
+        const textFilter = `drawtext=textfile=${textFile}:fontcolor=white:fontsize=48:x=(w-text_w)/2:y=h-th-100:borderw=2:bordercolor=black`;
         
-        // Create colored background with text overlay using drawtext filter
-        const textFilter = `drawtext=text='${escapedText}':fontcolor=white:fontsize=56:x=(w-text_w)/2:y=h*0.8:borderw=3:bordercolor=black`;
-        
+        // Generate video with colored background and text overlay
         command = [
           '-f', 'lavfi',
-          '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
+          '-i', `color=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
           '-vf', textFilter,
           '-c:v', 'libx264',
           '-pix_fmt', 'yuv420p',
+          '-preset', 'fast',
           '-y',
           segmentFile
         ];
@@ -473,13 +469,36 @@ export async function assembleStoryboard(
         log(`🔧 Scene ${i + 1}: Running FFmpeg command: ${command.join(' ')}`);
         await ffmpeg.run(...command);
         
+        // Clean up text file
+        try {
+          ffmpeg.FS('unlink', textFile);
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+        
         // Verify the file was created
         try {
           const data = ffmpeg.FS('readFile', segmentFile);
           if (data.length < 1000) {
-            throw new Error(`Generated file too small: ${data.length} bytes`);
+            // Fallback: Try without text if text rendering failed
+            log(`⚠️ Scene ${i + 1}: Text rendering failed, trying without text...`);
+            
+            const fallbackCommand = [
+              '-f', 'lavfi',
+              '-i', `color=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
+              '-c:v', 'libx264',
+              '-pix_fmt', 'yuv420p',
+              '-preset', 'fast',
+              '-y',
+              segmentFile
+            ];
+            
+            await ffmpeg.run(...fallbackCommand);
+            const fallbackData = ffmpeg.FS('readFile', segmentFile);
+            log(`✅ Scene ${i + 1}: Created with fallback (no text) - ${Math.round(fallbackData.length / 1024)}KB`);
+          } else {
+            log(`✅ Scene ${i + 1}: Created successfully with text - ${Math.round(data.length / 1024)}KB`);
           }
-          log(`✅ Scene ${i + 1}: Created successfully (${Math.round(data.length / 1024)}KB)`);
         } catch (readError) {
           log(`❌ Scene ${i + 1}: File not created or corrupted: ${readError}`);
           throw readError;
@@ -728,19 +747,28 @@ export async function assembleStoryboard(
             log(`❌ Failed to verify video-only file: ${e}`);
           }
           
-          // SIMPLE TEST: Just background music, no voiceover mixing
-          if (backgroundMusic && !voiceoverAudio) {
-            log(`🎵 SIMPLE TEST: Background music only`);
+          // Build audio mixing command based on available audio sources
+          let mixCommand: string[] = [];
+          const fadeTimes = calculateFadeTimes(totalDuration);
+          const musicGain = volumeToDb(audioConfig.musicVolume);
+          const musicLinearGain = Math.pow(10, musicGain / 20);
+          
+          if (backgroundMusic && voiceoverAudio) {
+            // Both background music and voiceover
+            log(`🎵 Mixing background music with voiceover`);
             
-            const fadeTimes = calculateFadeTimes(totalDuration);
-            const musicGain = volumeToDb(audioConfig.musicVolume);
-            const musicLinearGain = Math.pow(10, musicGain / 20);
+            const voiceVolume = 0.9;
+            const musicVolume = audioConfig.autoDuck ? musicLinearGain * 0.3 : musicLinearGain * 0.6;
             
-            const simpleCommand = [
+            mixCommand = [
               '-i', 'video-only.mp4',
               '-stream_loop', '-1',
               '-i', backgroundMusic,
-              '-filter_complex', `[1:a]volume=${musicLinearGain.toFixed(3)},afade=t=in:ss=0:d=${fadeTimes.fadeIn},afade=t=out:st=${fadeTimes.fadeOutStart}:d=${fadeTimes.fadeOut}[final_audio]`,
+              '-i', voiceoverAudio,
+              '-filter_complex',
+              `[1:a]volume=${musicVolume.toFixed(3)},afade=t=in:ss=0:d=${fadeTimes.fadeIn},afade=t=out:st=${fadeTimes.fadeOutStart}:d=${fadeTimes.fadeOut}[music];` +
+              `[2:a]volume=${voiceVolume}[voice];` +
+              `[music][voice]amix=inputs=2:duration=first:dropout_transition=2[final_audio]`,
               '-map', '0:v',
               '-map', '[final_audio]',
               '-c:v', 'copy',
@@ -751,117 +779,69 @@ export async function assembleStoryboard(
               'final-with-audio.mp4'
             ];
             
-            log(`🎵 Simple BGM command: ${simpleCommand.join(' ')}`);
-            
-            try {
-              await ffmpeg.run(...simpleCommand);
-              
-              const finalData = ffmpeg.FS('readFile', 'final-with-audio.mp4');
-              log(`🎵 ✅ Simple BGM mixing complete: ${Math.round(finalData.length / 1024)}KB`);
-              
-              // Clean up
-              ffmpeg.FS('unlink', 'video-only.mp4');
-              ffmpeg.FS('unlink', backgroundMusic);
-              ffmpeg.FS('unlink', 'final-with-audio.mp4');
-              
-              data = finalData;
-              log(`🎵 Data updated successfully, size: ${Math.round(data.length / 1024)}KB`);
-            } catch (simpleError) {
-              log(`❌ Simple BGM mixing failed: ${simpleError}`);
-              console.error('Simple BGM mixing error:', simpleError);
-              throw simpleError;
-            }
-          }
-          
-          // Build complex audio mixing filter
-          let filterComplex = '';
-          let inputs = ['-i', 'video-only.mp4'];
-          let inputIndex = 1;
-          
-          if (backgroundMusic && voiceoverAudio) {
-            // Both background music and voiceover
-            inputs.push('-stream_loop', '-1', '-i', backgroundMusic, '-i', voiceoverAudio);
-            
-            const fadeTimes = calculateFadeTimes(totalDuration);
-            const musicGain = volumeToDb(audioConfig.musicVolume);
-            const musicLinearGain = Math.pow(10, musicGain / 20);
-            
-            // Proper voiceover and background music mixing
-            if (audioConfig.autoDuck) {
-              // Auto-ducking: lower music volume when voiceover is playing
-              const duckedMusicGain = musicLinearGain * 0.3; // Duck music to 30% when VO plays
-              filterComplex = `
-                [1:a]volume=${duckedMusicGain.toFixed(3)},afade=t=in:ss=0:d=${fadeTimes.fadeIn},afade=t=out:st=${fadeTimes.fadeOutStart}:d=${fadeTimes.fadeOut}[music];
-                [2:a]volume=1.0[voice];
-                [music][voice]amix=inputs=2:duration=first[final_audio]
-              `.trim();
-              
-              log(`🎵 Auto-duck enabled: Music ducked to ${(duckedMusicGain * 100).toFixed(1)}%, VO at 100%`);
-            } else {
-              // No ducking: mix at equal levels
-              filterComplex = `
-                [1:a]volume=${(musicLinearGain * 0.6).toFixed(3)},afade=t=in:ss=0:d=${fadeTimes.fadeIn},afade=t=out:st=${fadeTimes.fadeOutStart}:d=${fadeTimes.fadeOut}[music];
-                [2:a]volume=0.8[voice];
-                [music][voice]amix=inputs=2:duration=first[final_audio]
-              `.trim();
-              
-              log(`🎵 No ducking: Music at ${(musicLinearGain * 60).toFixed(1)}%, VO at 80%`);
-            }
-            
           } else if (backgroundMusic) {
             // Background music only
-            inputs.push('-stream_loop', '-1', '-i', backgroundMusic);
+            log(`🎵 Adding background music only`);
             
-            const fadeTimes = calculateFadeTimes(totalDuration);
-            const musicGain = volumeToDb(audioConfig.musicVolume);
-            const musicLinearGain = Math.pow(10, musicGain / 20);
-            
-            filterComplex = `[1:a]volume=${musicLinearGain.toFixed(3)},afade=t=in:ss=0:d=${fadeTimes.fadeIn},afade=t=out:st=${fadeTimes.fadeOutStart}:d=${fadeTimes.fadeOut}[final_audio]`;
+            mixCommand = [
+              '-i', 'video-only.mp4',
+              '-stream_loop', '-1',
+              '-i', backgroundMusic,
+              '-filter_complex', 
+              `[1:a]volume=${musicLinearGain.toFixed(3)},afade=t=in:ss=0:d=${fadeTimes.fadeIn},afade=t=out:st=${fadeTimes.fadeOutStart}:d=${fadeTimes.fadeOut}[final_audio]`,
+              '-map', '0:v',
+              '-map', '[final_audio]',
+              '-c:v', 'copy',
+              '-c:a', 'aac',
+              '-b:a', '192k',
+              '-shortest',
+              '-y',
+              'final-with-audio.mp4'
+            ];
             
           } else if (voiceoverAudio) {
             // Voiceover only
-            inputs.push('-i', voiceoverAudio);
-            filterComplex = '[1:a]volume=1.5[final_audio]'; // Boost voiceover volume when solo
-            log(`🎤 Voiceover-only mode: VO at 150% volume`);
+            log(`🎤 Adding voiceover only`);
+            
+            mixCommand = [
+              '-i', 'video-only.mp4',
+              '-i', voiceoverAudio,
+              '-filter_complex', '[1:a]volume=1.0[final_audio]',
+              '-map', '0:v',
+              '-map', '[final_audio]',
+              '-c:v', 'copy',
+              '-c:a', 'aac',
+              '-b:a', '192k',
+              '-shortest',
+              '-y',
+              'final-with-audio.mp4'
+            ];
           }
           
-          // Execute audio mixing
-          const mixCommand = [
-            ...inputs,
-            '-filter_complex', filterComplex,
-            '-map', '0:v',
-            '-map', '[final_audio]',
-            '-c:v', 'copy',
-            '-c:a', 'aac',
-            '-b:a', '192k',
-            '-shortest',
-            '-y',
-            'final-with-audio.mp4'
-          ];
-          
-          log(`🎵 Full audio mix command: ffmpeg ${mixCommand.join(' ')}`);
-          log(`🎵 Filter complex: ${filterComplex}`);
-          
-          try {
-            await ffmpeg.run(...mixCommand);
-            log(`🎵 ✅ FFmpeg audio mixing completed successfully`);
-          } catch (mixError) {
-            log(`❌ FFmpeg audio mixing failed: ${mixError}`);
-            console.error('FFmpeg audio mixing error:', mixError);
-            throw mixError;
+          // Execute audio mixing if we have any audio
+          if (mixCommand.length > 0) {
+            log(`🎵 Executing audio mix: ${mixCommand.join(' ')}`);
+            
+            try {
+              await ffmpeg.run(...mixCommand);
+              
+              const finalData = ffmpeg.FS('readFile', 'final-with-audio.mp4');
+              log(`🎵 ✅ Audio mixing complete: ${Math.round(finalData.length / 1024)}KB`);
+              
+              // Clean up
+              ffmpeg.FS('unlink', 'video-only.mp4');
+              if (backgroundMusic) ffmpeg.FS('unlink', backgroundMusic);
+              if (voiceoverAudio) ffmpeg.FS('unlink', voiceoverAudio);
+              ffmpeg.FS('unlink', 'final-with-audio.mp4');
+              
+              data = finalData;
+            } catch (mixError) {
+              log(`❌ Audio mixing failed: ${mixError}, using video-only`);
+              console.error('Audio mixing error:', mixError);
+            }
           }
           
-          // Read final result
-          const finalData = ffmpeg.FS('readFile', 'final-with-audio.mp4');
-          log(`🎵 ✅ Audio mixing complete: ${Math.round(finalData.length / 1024)}KB`);
-          
-          // Clean up
-          ffmpeg.FS('unlink', 'video-only.mp4');
-          if (backgroundMusic) ffmpeg.FS('unlink', backgroundMusic);
-          if (voiceoverAudio) ffmpeg.FS('unlink', voiceoverAudio);
-          ffmpeg.FS('unlink', 'final-with-audio.mp4');
-          
-          data = finalData;
+          // Audio mixing has been handled above, no need for duplicate code
         }
         
       } catch (audioError) {
