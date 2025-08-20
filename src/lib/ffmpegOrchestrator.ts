@@ -458,6 +458,7 @@ export async function assembleStoryboard(
     const encoder = new TextEncoder();
     ffmpeg.FS('writeFile', 'subtitles.vtt', encoder.encode(subtitleContent));
     log(`📝 Created subtitle file with ${updatedScenes.length} entries`);
+    log(`📝 Subtitle content preview:\n${subtitleContent.substring(0, 500)}...`);
     
     // Now generate scene videos
     for (let i = 0; i < updatedScenes.length; i++) {
@@ -545,8 +546,8 @@ export async function assembleStoryboard(
     // Create concat list file
     log(`Creating concat list for ${existingFiles.length} segments...`);
     const concatList = existingFiles.map(f => `file '${f}'`).join('\n');
-    const encoder = new TextEncoder();
-    const concatBytes = encoder.encode(concatList);
+    const concatEncoder = new TextEncoder();
+    const concatBytes = concatEncoder.encode(concatList);
     ffmpeg.FS('writeFile', 'clips.txt', concatBytes);
     
     log(`Concat list content:\n${concatList}`);
@@ -565,6 +566,15 @@ export async function assembleStoryboard(
       
       // Try concatenation with re-encoding and subtitles
       log('Attempting concatenation with subtitles...');
+      
+      // First verify subtitle file exists
+      try {
+        const subtitleData = ffmpeg.FS('readFile', 'subtitles.vtt');
+        log(`✓ Subtitle file verified: ${subtitleData.length} bytes`);
+      } catch (subError) {
+        log(`✗ Subtitle file missing: ${subError}`);
+      }
+      
       const concatCommand = [
         '-f', 'concat',
         '-safe', '0',

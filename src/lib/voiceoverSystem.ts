@@ -380,10 +380,11 @@ export async function generateVoiceover(
 
   console.log(`[VO] 🎵 FINAL VOICEOVER TRACK:`);
   console.log(`  📏 Total duration: ${totalVideoDuration.toFixed(2)}s`);
-  console.log(`  📊 Scene durations: ${sceneDurations.map(d => d.toFixed(2)).join(', ')}s`);
-  console.log(`  📊 Video scene sync: Each scene plays its voiceover at the start`);
+  console.log(`  📊 Original scene durations: ${sceneDurations.map(d => d.toFixed(2)).join(', ')}s`);
+  console.log(`  📊 Video scene durations: ${videoSceneDurations.map(d => d.toFixed(2)).join(', ')}s`);
+  console.log(`  📊 Audio samples: ${combinedPCM.length} (${(combinedPCM.length / sampleRate).toFixed(2)}s)`);
   console.log(`  💾 Audio file size: ${(audioBlob.size / 1024).toFixed(1)}KB`);
-  console.log(`  🎤 NOTE: Voiceover now synced to video scene timing.`);
+  console.log(`  🎤 Testing: First 100 samples range: ${Math.min(...combinedPCM.slice(0, 100)).toFixed(3)} to ${Math.max(...combinedPCM.slice(0, 100)).toFixed(3)}`);
 
   return {
     audioBlob,
