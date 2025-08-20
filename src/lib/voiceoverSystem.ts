@@ -102,26 +102,36 @@ async function synthesizeTextToPCM(text: string, config: VoiceoverConfig): Promi
         const wordIndex = Math.floor(progress * wordCount);
         const wordProgress = (progress * wordCount) % 1;
         
-        // Generate actual audible voice-like tones
-        const baseFreq = 300 + (wordIndex % 3) * 100; // 300Hz, 400Hz, or 500Hz
-        const vibrato = Math.sin(2 * Math.PI * 5 * time) * 0.1; // 5Hz vibrato
+        // Create more human-like voice synthesis with harmonics
+        const baseFreq = 150 + (wordIndex % 5) * 50; // 150-350Hz range (human voice)
         
-        // Main voice tone with vibrato
-        const voiceTone = Math.sin(2 * Math.PI * (baseFreq + vibrato) * time);
+        // Add natural voice harmonics
+        const fundamental = Math.sin(2 * Math.PI * baseFreq * time);
+        const harmonic2 = Math.sin(2 * Math.PI * baseFreq * 2 * time) * 0.5;
+        const harmonic3 = Math.sin(2 * Math.PI * baseFreq * 3 * time) * 0.25;
+        const harmonic4 = Math.sin(2 * Math.PI * baseFreq * 4 * time) * 0.125;
         
-        // Word envelope (on/off pattern for words)
+        // Natural vibrato and formants
+        const vibrato = Math.sin(2 * Math.PI * 4.5 * time) * 0.08; // 4.5Hz vibrato
+        const formant = Math.sin(2 * Math.PI * (1000 + vibrato * 50) * time) * 0.2;
+        
+        // Combine harmonics for voice-like timbre
+        const voiceTone = (fundamental + harmonic2 + harmonic3 + harmonic4) * 0.6 + formant * 0.4;
+        
+        // More natural word spacing and rhythm
         const wordDuration = speechDuration / wordCount;
-        const wordStart = Math.floor(time / wordDuration);
         const wordTime = (time % wordDuration) / wordDuration;
-        const wordEnvelope = wordTime < 0.8 ? 1 : 0; // 80% on, 20% off for word spacing
+        const syllablePattern = Math.sin(wordTime * Math.PI * 2) * Math.sin(wordTime * Math.PI);
+        const wordEnvelope = wordTime < 0.85 ? syllablePattern * 0.8 + 0.2 : 0.1; // Natural speech rhythm
         
-        // Overall volume envelope
-        const fadeIn = Math.min(1, progress * 5);
-        const fadeOut = Math.min(1, (1 - progress) * 5);
-        const overallEnvelope = Math.min(fadeIn, fadeOut);
+        // Smooth overall envelope with breath-like pauses
+        const fadeIn = Math.min(1, progress * 3);
+        const fadeOut = Math.min(1, (1 - progress) * 3);
+        const breathPattern = 1 - Math.sin(progress * Math.PI * 6) * 0.1; // Subtle breathing
+        const overallEnvelope = Math.min(fadeIn, fadeOut) * breathPattern;
         
-        // Combine everything with audible volume
-        const finalSample = voiceTone * wordEnvelope * overallEnvelope * 0.4;
+        // Combine everything with natural volume variation
+        const finalSample = voiceTone * wordEnvelope * overallEnvelope * 0.3;
         
         capturedAudio[i] = finalSample;
       }
@@ -210,16 +220,27 @@ export async function generateVoiceover(
         const wordIndex = Math.floor(progress * wordCount);
         const wordProgress = (progress * wordCount) % 1;
         
-        // Different frequency for each word to simulate speech variation
-        const baseFreq = 200 + (wordIndex * 30) % 200;
-        const harmonics = Math.sin(2 * Math.PI * baseFreq * time) * 0.3 +
-                         Math.sin(2 * Math.PI * baseFreq * 2 * time) * 0.2 +
-                         Math.sin(2 * Math.PI * baseFreq * 3 * time) * 0.1;
+        // Enhanced fallback voice synthesis matching the main algorithm
+        const baseFreq = 150 + (wordIndex % 5) * 50; // Human voice range
         
-        // Add speech-like envelope
-        const speechEnvelope = Math.sin(wordProgress * Math.PI) * Math.sin(progress * Math.PI);
+        // Rich harmonic content for natural voice
+        const fundamental = Math.sin(2 * Math.PI * baseFreq * time);
+        const harmonic2 = Math.sin(2 * Math.PI * baseFreq * 2 * time) * 0.5;
+        const harmonic3 = Math.sin(2 * Math.PI * baseFreq * 3 * time) * 0.25;
+        const harmonic4 = Math.sin(2 * Math.PI * baseFreq * 4 * time) * 0.125;
         
-        voicePCM[j] = harmonics * speechEnvelope * 0.5;
+        // Natural vibrato and formants
+        const vibrato = Math.sin(2 * Math.PI * 4.5 * time) * 0.08;
+        const formant = Math.sin(2 * Math.PI * (1000 + vibrato * 50) * time) * 0.2;
+        
+        // Voice-like timbre
+        const voiceTone = (fundamental + harmonic2 + harmonic3 + harmonic4) * 0.6 + formant * 0.4;
+        
+        // Natural speech rhythm
+        const syllablePattern = Math.sin(wordProgress * Math.PI * 2) * Math.sin(wordProgress * Math.PI);
+        const speechEnvelope = syllablePattern * Math.sin(progress * Math.PI) * 0.8 + 0.2;
+        
+        voicePCM[j] = voiceTone * speechEnvelope * 0.3;
       }
       
       scenePCMData.push(voicePCM);

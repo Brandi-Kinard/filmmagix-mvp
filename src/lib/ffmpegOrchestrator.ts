@@ -372,7 +372,7 @@ export async function assembleStoryboard(
     }
     
     const ffmpeg = await getFFmpeg();
-    await ensureFont(ffmpeg);
+    // Skip font loading - use system font instead
     
     // Track comprehensive scene metrics for debugging  
     const sceneMetrics: Array<{
@@ -532,8 +532,8 @@ export async function assembleStoryboard(
         throw new Error('Concat list file not created properly');
       }
       
-      // Simple concatenation WITHOUT text rendering (get basic video working first)
-      log('Attempting simple concatenation without text...');
+      // Use working approach - simple concatenation with copy codec (no text for now)
+      log('Concatenating scenes with copy codec...');
       
       const concatCommand = [
         '-f', 'concat',
@@ -545,7 +545,6 @@ export async function assembleStoryboard(
       ];
       
       log(`[FFMPEG CONCAT] Command: ffmpeg ${concatCommand.join(' ')}`);
-      
       await ffmpeg.run(...concatCommand);
       
       // Verify output file was created
