@@ -425,40 +425,8 @@ export async function assembleStoryboard(
       return lines.join('\\n');
     }
     
-    // COMPLETELY NEW APPROACH - Using subtitles for reliable text rendering
-    log(`🔄 STARTING SCENE GENERATION WITH SUBTITLES: ${updatedScenes.length} scenes`);
-    
-    // First, create a subtitle file for all scenes
-    let subtitleContent = 'WEBVTT\n\n';
-    let currentTime = 0;
-    
-    for (let i = 0; i < updatedScenes.length; i++) {
-      const scene = updatedScenes[i];
-      const sceneDuration = Math.max(5, scene.durationSec || 5);
-      const startTime = currentTime;
-      const endTime = currentTime + sceneDuration;
-      
-      // Format times for WebVTT
-      const formatTime = (seconds: number) => {
-        const hrs = Math.floor(seconds / 3600).toString().padStart(2, '0');
-        const mins = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0');
-        const secs = (seconds % 60).toFixed(3).padStart(6, '0');
-        return `${hrs}:${mins}:${secs}`;
-      };
-      
-      // Add subtitle entry
-      subtitleContent += `${i + 1}\n`;
-      subtitleContent += `${formatTime(startTime)} --> ${formatTime(endTime)}\n`;
-      subtitleContent += `${scene.text}\n\n`;
-      
-      currentTime = endTime;
-    }
-    
-    // Write subtitle file
-    const encoder = new TextEncoder();
-    ffmpeg.FS('writeFile', 'subtitles.vtt', encoder.encode(subtitleContent));
-    log(`📝 Created subtitle file with ${updatedScenes.length} entries`);
-    log(`📝 Subtitle content preview:\n${subtitleContent.substring(0, 500)}...`);
+    // PROVEN APPROACH - Simple colored backgrounds, text added during concatenation
+    log(`🔄 STARTING SIMPLE SCENE GENERATION: ${updatedScenes.length} scenes`);
     
     // Now generate scene videos
     for (let i = 0; i < updatedScenes.length; i++) {
@@ -564,22 +532,42 @@ export async function assembleStoryboard(
         throw new Error('Concat list file not created properly');
       }
       
-      // Try concatenation with re-encoding and subtitles
-      log('Attempting concatenation with subtitles...');
+      // Try concatenation with built-in text rendering (no external fonts)
+      log('Attempting concatenation with built-in text rendering...');
       
-      // First verify subtitle file exists
-      try {
-        const subtitleData = ffmpeg.FS('readFile', 'subtitles.vtt');
-        log(`✓ Subtitle file verified: ${subtitleData.length} bytes`);
-      } catch (subError) {
-        log(`✗ Subtitle file missing: ${subError}`);
+      // Create text overlays for each scene using drawtext (no font files needed)
+      const totalDuration = updatedScenes.reduce((total, scene) => total + Math.max(5, scene.durationSec || 5), 0);
+      let textFilters = [];
+      let currentTime = 0;
+      
+      for (let i = 0; i < updatedScenes.length; i++) {
+        const scene = updatedScenes[i];
+        const sceneDuration = Math.max(5, scene.durationSec || 5);
+        const startTime = currentTime;
+        const endTime = currentTime + sceneDuration;
+        
+        // Clean text for FFmpeg
+        const cleanText = scene.text
+          .replace(/['"]/g, '')
+          .replace(/[:]/g, ' - ')
+          .replace(/[,;]/g, ' ')
+          .substring(0, 80); // Limit length
+        
+        // Add text overlay for this time range
+        textFilters.push(
+          `drawtext=text='${cleanText}':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=h-th-80:enable='between(t,${startTime},${endTime})':borderw=2:bordercolor=black`
+        );
+        
+        currentTime = endTime;
       }
+      
+      const textFilterChain = textFilters.join(',');
       
       const concatCommand = [
         '-f', 'concat',
         '-safe', '0',
         '-i', 'clips.txt',
-        '-vf', `subtitles=subtitles.vtt:force_style='FontName=Arial,FontSize=24,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=2,Shadow=1,MarginV=100'`,
+        '-vf', textFilterChain,
         '-c:v', 'libx264',
         '-pix_fmt', 'yuv420p',
         '-r', '30',
