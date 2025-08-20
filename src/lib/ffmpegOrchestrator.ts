@@ -425,18 +425,50 @@ export async function assembleStoryboard(
       return lines.join('\\n');
     }
     
-    // BULLETPROOF SCENE GENERATION - Using proven approach
-    log(`🔄 STARTING BULLETPROOF SCENE GENERATION: ${updatedScenes.length} scenes`);
+    // COMPLETELY NEW APPROACH - Using subtitles for reliable text rendering
+    log(`🔄 STARTING SCENE GENERATION WITH SUBTITLES: ${updatedScenes.length} scenes`);
     
+    // First, create a subtitle file for all scenes
+    let subtitleContent = 'WEBVTT\n\n';
+    let currentTime = 0;
+    
+    for (let i = 0; i < updatedScenes.length; i++) {
+      const scene = updatedScenes[i];
+      const sceneDuration = Math.max(5, scene.durationSec || 5);
+      const startTime = currentTime;
+      const endTime = currentTime + sceneDuration;
+      
+      // Format times for WebVTT
+      const formatTime = (seconds: number) => {
+        const hrs = Math.floor(seconds / 3600).toString().padStart(2, '0');
+        const mins = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0');
+        const secs = (seconds % 60).toFixed(3).padStart(6, '0');
+        return `${hrs}:${mins}:${secs}`;
+      };
+      
+      // Add subtitle entry
+      subtitleContent += `${i + 1}\n`;
+      subtitleContent += `${formatTime(startTime)} --> ${formatTime(endTime)}\n`;
+      subtitleContent += `${scene.text}\n\n`;
+      
+      currentTime = endTime;
+    }
+    
+    // Write subtitle file
+    const encoder = new TextEncoder();
+    ffmpeg.FS('writeFile', 'subtitles.vtt', encoder.encode(subtitleContent));
+    log(`📝 Created subtitle file with ${updatedScenes.length} entries`);
+    
+    // Now generate scene videos
     for (let i = 0; i < updatedScenes.length; i++) {
       const scene = updatedScenes[i];
       const sceneDuration = Math.max(5, scene.durationSec || 5);
       const segmentFile = `seg-${String(i).padStart(3, '0')}.mp4`;
       segmentFiles.push(segmentFile);
       
-      log(`🎬 SCENE ${i + 1}: Creating ${sceneDuration}s video with text: "${scene.text.substring(0, 50)}..."`);
+      log(`🎬 SCENE ${i + 1}: Creating ${sceneDuration}s video`);
       
-      let command: string[] = []; // Declare command outside try block
+      let command: string[] = [];
       
       try {
         // Generate simple colored background - different color per scene
@@ -445,62 +477,16 @@ export async function assembleStoryboard(
         
         log(`🎨 Scene ${i + 1}: Using ${color} background`);
         
-        // Simplify text for FFmpeg - remove all problematic characters
-        const cleanText = scene.text
-          .replace(/[':"]/g, '')  // Remove quotes
-          .replace(/[,;]/g, ' ')   // Replace punctuation with spaces
-          .replace(/\s+/g, ' ')    // Normalize whitespace
-          .trim();
-        
-        // Wrap text for display
-        const wrappedText = wrapTextSimple(cleanText, 40);
-        const lines = wrappedText.split('\\n');
-        
-        log(`📝 Scene ${i + 1} text (${lines.length} lines): "${cleanText.substring(0, 50)}..."`);
-        
-        // Create filter for multiple text lines with proper positioning
-        let textFilters = [];
-        const fontSize = 48;
-        const lineHeight = fontSize + 15;
-        const startY = 800; // Start position for text (bottom area)
-        
-        for (let lineIdx = 0; lineIdx < lines.length && lineIdx < 3; lineIdx++) {
-          const line = lines[lineIdx];
-          if (line.trim()) {
-            const yPos = startY + (lineIdx * lineHeight);
-            // Use simpler escaping
-            const escapedLine = line.replace(/'/g, '').replace(/:/g, '').replace(/\\/g, '');
-            textFilters.push(
-              `drawtext=text='${escapedLine}':fontcolor=white:fontsize=${fontSize}:x=(w-text_w)/2:y=${yPos}:shadowcolor=black@0.8:shadowx=2:shadowy=2`
-            );
-          }
-        }
-        
-        // Generate video with colored background and text overlay
-        if (textFilters.length > 0) {
-          const filterChain = textFilters.join(',');
-          command = [
-            '-f', 'lavfi',
-            '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
-            '-vf', filterChain,
-            '-c:v', 'libx264',
-            '-pix_fmt', 'yuv420p',
-            '-preset', 'fast',
-            '-y',
-            segmentFile
-          ];
-        } else {
-          // Fallback to just colored background if no text
-          command = [
-            '-f', 'lavfi',
-            '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
-            '-c:v', 'libx264',
-            '-pix_fmt', 'yuv420p',
-            '-preset', 'fast',
-            '-y',
-            segmentFile
-          ];
-        }
+        // Generate simple colored video without text (text will be added later)
+        command = [
+          '-f', 'lavfi',
+          '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
+          '-c:v', 'libx264',
+          '-pix_fmt', 'yuv420p',
+          '-preset', 'fast',
+          '-y',
+          segmentFile
+        ];
         
         log(`🔧 Scene ${i + 1}: Running FFmpeg command: ${command.join(' ')}`);
         await ffmpeg.run(...command);
@@ -577,12 +563,13 @@ export async function assembleStoryboard(
         throw new Error('Concat list file not created properly');
       }
       
-      // Try concatenation with re-encoding
-      log('Attempting concatenation with re-encoding...');
+      // Try concatenation with re-encoding and subtitles
+      log('Attempting concatenation with subtitles...');
       const concatCommand = [
         '-f', 'concat',
         '-safe', '0',
         '-i', 'clips.txt',
+        '-vf', `subtitles=subtitles.vtt:force_style='FontName=Arial,FontSize=24,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=2,Shadow=1,MarginV=100'`,
         '-c:v', 'libx264',
         '-pix_fmt', 'yuv420p',
         '-r', '30',
@@ -890,6 +877,11 @@ export async function assembleStoryboard(
     }
     ffmpeg.FS('unlink', 'clips.txt');
     ffmpeg.FS('unlink', 'storyboard.mp4');
+    try {
+      ffmpeg.FS('unlink', 'subtitles.vtt');
+    } catch (e) {
+      // Subtitle file might not exist
+    }
     
     log(`✓ Cinematic storyboard generated: ${Math.round(data.length / 1024)}KB`);
     log(`📊 Final scene metrics summary:`);

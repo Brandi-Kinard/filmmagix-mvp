@@ -328,31 +328,44 @@ export async function generateVoiceover(
   console.log(`[VO] 📊 Scene timings: ${sceneDurations.map((d, i) => `Scene ${i+1}: ${d.toFixed(1)}s`).join(', ')}`);
 
   // Create properly timed combined audio matching video scene durations
-  const totalVideoDuration = sceneDurations.reduce((total, duration) => {
-    const sceneDuration = Math.max(4.5, Math.ceil(duration + 0.4));
-    return total + sceneDuration;
-  }, 0);
+  // Each scene should be 5+ seconds as defined in the video generation
+  const videoSceneDurations = sceneDurations.map(d => Math.max(5, d || 5));
+  const totalVideoDuration = videoSceneDurations.reduce((total, duration) => total + duration, 0);
   
   const sampleRate = 44100;
   const totalSamples = Math.floor(sampleRate * totalVideoDuration);
   const combinedPCM = new Float32Array(totalSamples);
   
-  // Place each scene's audio at video scene timing (not voiceover timestamps)
-  // Calculate cumulative scene durations from the synced scene durations
+  console.log(`[VO] 🎬 Creating ${totalVideoDuration.toFixed(1)}s voiceover track for ${scenePCMData.length} scenes`);
+  console.log(`[VO] 📏 Video scene durations: ${videoSceneDurations.map(d => d.toFixed(1)).join('s, ')}s`);
+  
+  // Place each scene's audio at the start of its video scene
   let videoTimestamp = 0;
   for (let i = 0; i < scenePCMData.length; i++) {
     const startSample = Math.floor(videoTimestamp * sampleRate);
     const scenePCM = scenePCMData[i];
+    const sceneVideoLength = videoSceneDurations[i];
+    const maxSamples = Math.floor(sceneVideoLength * sampleRate);
     
-    console.log(`[VO] Placing scene ${i + 1} at video time ${videoTimestamp.toFixed(2)}s (sample ${startSample})`);
+    console.log(`[VO] 🎤 Scene ${i + 1}: Placing at ${videoTimestamp.toFixed(2)}s for ${sceneVideoLength.toFixed(1)}s`);
     
-    for (let j = 0; j < scenePCM.length && (startSample + j) < combinedPCM.length; j++) {
-      combinedPCM[startSample + j] = scenePCM[j];
+    // Fill the entire scene duration with the voiceover audio
+    for (let j = 0; j < maxSamples && (startSample + j) < combinedPCM.length; j++) {
+      if (j < scenePCM.length) {
+        combinedPCM[startSample + j] = scenePCM[j];
+      } else {
+        // If voiceover is shorter than scene, fade to silence
+        const fadePos = j - scenePCM.length;
+        const fadeLength = Math.min(sampleRate * 0.5, maxSamples - scenePCM.length); // 0.5s fade
+        if (fadePos < fadeLength) {
+          const fadeMultiplier = 1 - (fadePos / fadeLength);
+          combinedPCM[startSample + j] = scenePCM[scenePCM.length - 1] * fadeMultiplier;
+        }
+      }
     }
     
-    // Move to next scene time based on synced scene duration
-    const sceneDuration = Math.max(4.5, Math.ceil(sceneDurations[i] + 0.4));
-    videoTimestamp += sceneDuration;
+    // Move to next scene
+    videoTimestamp += sceneVideoLength;
   }
 
   // Convert to 16-bit for WAV
