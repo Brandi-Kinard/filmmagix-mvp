@@ -50,17 +50,17 @@ function createWavBlob(audioBuffer: ArrayBuffer, sampleRate: number, channels: n
 }
 
 /**
- * Capture actual Web Speech API audio using system audio routing
+ * Generate voiceover audio without playing it out loud
  */
 async function synthesizeTextToPCM(text: string, config: VoiceoverConfig): Promise<{ pcmData: Float32Array; duration: number }> {
   return new Promise(async (resolve, reject) => {
-    console.log(`[VO] Capturing REAL speech audio: "${text.substring(0, 50)}..."`);
+    console.log(`[VO] Generating voiceover audio silently: "${text.substring(0, 50)}..."`);
 
     try {
-      // Create the speech utterance
+      // Create the speech utterance with ZERO volume to prevent audio playback
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.rate = config.rate;
-      utterance.volume = config.volume;
+      utterance.volume = 0; // MUTE the speech - we only need timing
       
       if (config.voiceId) {
         const voices = speechSynthesis.getVoices();
@@ -240,8 +240,8 @@ export async function generateVoiceover(
   config: VoiceoverConfig,
   onProgress?: (scene: number, total: number) => void
 ): Promise<VoiceoverResult> {
-  console.log(`[VO] 🗣️ CLEAR HUMAN SPEECH APPROACH - Speaking each scene with proper timing`);
-  console.log(`[VO] Config: voice=${config.voiceId}, rate=${config.rate}x, volume=${config.volume}`);
+  console.log(`[VO] 🔇 SILENT GENERATION - Creating voiceover timing without audio playback`);
+  console.log(`[VO] Config: voice=${config.voiceId}, rate=${config.rate}x`);
   
   if (!('speechSynthesis' in window)) {
     throw new Error('Web Speech API not supported in this browser');
@@ -255,7 +255,7 @@ export async function generateVoiceover(
   const scenePCMData: Float32Array[] = [];
   let currentTimestamp = 0;
 
-  console.log(`[VO] 🎤 IMPORTANT: You will hear clear human speech for each scene. This creates timing for the video.`);
+  console.log(`[VO] 🔇 Generating voiceover silently (no audio will play during export)`);
 
   // Process each scene with real speech and audio capture attempt
   for (let i = 0; i < sceneTexts.length; i++) {
@@ -270,7 +270,7 @@ export async function generateVoiceover(
         await new Promise(resolve => setTimeout(resolve, 800));
       }
       
-      console.log(`[VO] 🗣️ SPEAKING SCENE ${i + 1} NOW:`);
+      console.log(`[VO] 🔇 Processing scene ${i + 1} silently...`);
       
       // Synthesize with real speech + timing capture
       const { pcmData, duration } = await synthesizeTextToPCM(text, config);
@@ -298,12 +298,21 @@ export async function generateVoiceover(
         const time = j / sampleRate;
         const progress = time / estimatedDuration;
         
-        // Generate clear voice-like tones that sync with words
-        const wordFreq = 350 + (i * 50); // Different tone per scene
-        const wordEnvelope = Math.sin(progress * text.split(' ').length * Math.PI) * 0.7;
-        const overallEnvelope = Math.sin(progress * Math.PI);
+        // Generate speech-like audio pattern for this scene
+        const wordCount = text.split(' ').length;
+        const wordIndex = Math.floor(progress * wordCount);
+        const wordProgress = (progress * wordCount) % 1;
         
-        voicePCM[j] = Math.sin(2 * Math.PI * wordFreq * time) * wordEnvelope * overallEnvelope * 0.6;
+        // Different frequency for each word to simulate speech variation
+        const baseFreq = 200 + (wordIndex * 30) % 200;
+        const harmonics = Math.sin(2 * Math.PI * baseFreq * time) * 0.3 +
+                         Math.sin(2 * Math.PI * baseFreq * 2 * time) * 0.2 +
+                         Math.sin(2 * Math.PI * baseFreq * 3 * time) * 0.1;
+        
+        // Add speech-like envelope
+        const speechEnvelope = Math.sin(wordProgress * Math.PI) * Math.sin(progress * Math.PI);
+        
+        voicePCM[j] = harmonics * speechEnvelope * 0.5;
       }
       
       scenePCMData.push(voicePCM);

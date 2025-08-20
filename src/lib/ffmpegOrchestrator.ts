@@ -440,41 +440,70 @@ export async function assembleStoryboard(
       
       try {
         // Generate simple colored background - different color per scene
-        const colors = ['0x4169E1', '0x228B22', '0x9370DB', '0xFF8C00', '0xDC143C', '0x00CED1', '0xFFD700', '0xFF1493'];
+        const colors = ['blue', 'green', 'purple', 'orange', 'red', 'cyan', 'yellow', 'magenta'];
         const color = colors[i % colors.length];
         
-        // Write text to a temporary file to avoid escaping issues
-        const textFile = `text-${i}.txt`;
-        const encoder = new TextEncoder();
-        const wrappedText = wrapTextSimple(scene.text, 45); // Conservative wrap for safety
-        ffmpeg.FS('writeFile', textFile, encoder.encode(wrappedText));
+        log(`🎨 Scene ${i + 1}: Using ${color} background`);
         
-        log(`🎨 Scene ${i + 1}: Using color ${color} with text file: ${textFile}`);
+        // Simplify text for FFmpeg - remove all problematic characters
+        const cleanText = scene.text
+          .replace(/[':"]/g, '')  // Remove quotes
+          .replace(/[,;]/g, ' ')   // Replace punctuation with spaces
+          .replace(/\s+/g, ' ')    // Normalize whitespace
+          .trim();
         
-        // Use textfile approach which is more reliable than inline text
-        const textFilter = `drawtext=textfile=${textFile}:fontcolor=white:fontsize=48:x=(w-text_w)/2:y=h-th-100:borderw=2:bordercolor=black`;
+        // Wrap text for display
+        const wrappedText = wrapTextSimple(cleanText, 40);
+        const lines = wrappedText.split('\\n');
+        
+        log(`📝 Scene ${i + 1} text (${lines.length} lines): "${cleanText.substring(0, 50)}..."`);
+        
+        // Create filter for multiple text lines with proper positioning
+        let textFilters = [];
+        const fontSize = 48;
+        const lineHeight = fontSize + 15;
+        const startY = 800; // Start position for text (bottom area)
+        
+        for (let lineIdx = 0; lineIdx < lines.length && lineIdx < 3; lineIdx++) {
+          const line = lines[lineIdx];
+          if (line.trim()) {
+            const yPos = startY + (lineIdx * lineHeight);
+            // Use simpler escaping
+            const escapedLine = line.replace(/'/g, '').replace(/:/g, '').replace(/\\/g, '');
+            textFilters.push(
+              `drawtext=text='${escapedLine}':fontcolor=white:fontsize=${fontSize}:x=(w-text_w)/2:y=${yPos}:shadowcolor=black@0.8:shadowx=2:shadowy=2`
+            );
+          }
+        }
         
         // Generate video with colored background and text overlay
-        command = [
-          '-f', 'lavfi',
-          '-i', `color=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
-          '-vf', textFilter,
-          '-c:v', 'libx264',
-          '-pix_fmt', 'yuv420p',
-          '-preset', 'fast',
-          '-y',
-          segmentFile
-        ];
+        if (textFilters.length > 0) {
+          const filterChain = textFilters.join(',');
+          command = [
+            '-f', 'lavfi',
+            '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
+            '-vf', filterChain,
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-preset', 'fast',
+            '-y',
+            segmentFile
+          ];
+        } else {
+          // Fallback to just colored background if no text
+          command = [
+            '-f', 'lavfi',
+            '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-preset', 'fast',
+            '-y',
+            segmentFile
+          ];
+        }
         
         log(`🔧 Scene ${i + 1}: Running FFmpeg command: ${command.join(' ')}`);
         await ffmpeg.run(...command);
-        
-        // Clean up text file
-        try {
-          ffmpeg.FS('unlink', textFile);
-        } catch (e) {
-          // Ignore cleanup errors
-        }
         
         // Verify the file was created
         try {
