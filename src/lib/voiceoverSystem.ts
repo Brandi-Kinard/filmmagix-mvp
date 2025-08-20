@@ -102,21 +102,28 @@ async function synthesizeTextToPCM(text: string, config: VoiceoverConfig): Promi
         const wordIndex = Math.floor(progress * wordCount);
         const wordProgress = (progress * wordCount) % 1;
         
-        // Different frequency for each word to simulate speech variation
-        const baseFreq = 200 + (wordIndex * 30) % 200;
-        const harmonics = Math.sin(2 * Math.PI * baseFreq * time) * 0.3 +
-                         Math.sin(2 * Math.PI * baseFreq * 2 * time) * 0.2 +
-                         Math.sin(2 * Math.PI * baseFreq * 3 * time) * 0.1;
+        // Generate actual audible voice-like tones
+        const baseFreq = 300 + (wordIndex % 3) * 100; // 300Hz, 400Hz, or 500Hz
+        const vibrato = Math.sin(2 * Math.PI * 5 * time) * 0.1; // 5Hz vibrato
         
-        // Add speech-like envelope
-        const speechEnvelope = Math.sin(wordProgress * Math.PI) * Math.sin(progress * Math.PI);
+        // Main voice tone with vibrato
+        const voiceTone = Math.sin(2 * Math.PI * (baseFreq + vibrato) * time);
         
-        // Apply natural volume envelope
-        const fadeIn = Math.min(1, progress * 10);
-        const fadeOut = Math.min(1, (1 - progress) * 10);
-        const sample = harmonics * speechEnvelope * Math.min(fadeIn, fadeOut) * 0.6;
+        // Word envelope (on/off pattern for words)
+        const wordDuration = speechDuration / wordCount;
+        const wordStart = Math.floor(time / wordDuration);
+        const wordTime = (time % wordDuration) / wordDuration;
+        const wordEnvelope = wordTime < 0.8 ? 1 : 0; // 80% on, 20% off for word spacing
         
-        capturedAudio[i] = sample;
+        // Overall volume envelope
+        const fadeIn = Math.min(1, progress * 5);
+        const fadeOut = Math.min(1, (1 - progress) * 5);
+        const overallEnvelope = Math.min(fadeIn, fadeOut);
+        
+        // Combine everything with audible volume
+        const finalSample = voiceTone * wordEnvelope * overallEnvelope * 0.4;
+        
+        capturedAudio[i] = finalSample;
       }
 
       resolve({ pcmData: capturedAudio, duration: speechDuration });

@@ -532,46 +532,14 @@ export async function assembleStoryboard(
         throw new Error('Concat list file not created properly');
       }
       
-      // Try concatenation with built-in text rendering (no external fonts)
-      log('Attempting concatenation with built-in text rendering...');
-      
-      // Create text overlays for each scene using drawtext (no font files needed)
-      const totalDuration = updatedScenes.reduce((total, scene) => total + Math.max(5, scene.durationSec || 5), 0);
-      let textFilters = [];
-      let currentTime = 0;
-      
-      for (let i = 0; i < updatedScenes.length; i++) {
-        const scene = updatedScenes[i];
-        const sceneDuration = Math.max(5, scene.durationSec || 5);
-        const startTime = currentTime;
-        const endTime = currentTime + sceneDuration;
-        
-        // Clean text for FFmpeg
-        const cleanText = scene.text
-          .replace(/['"]/g, '')
-          .replace(/[:]/g, ' - ')
-          .replace(/[,;]/g, ' ')
-          .substring(0, 80); // Limit length
-        
-        // Add text overlay for this time range
-        textFilters.push(
-          `drawtext=text='${cleanText}':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=h-th-80:enable='between(t,${startTime},${endTime})':borderw=2:bordercolor=black`
-        );
-        
-        currentTime = endTime;
-      }
-      
-      const textFilterChain = textFilters.join(',');
+      // Simple concatenation WITHOUT text rendering (get basic video working first)
+      log('Attempting simple concatenation without text...');
       
       const concatCommand = [
         '-f', 'concat',
         '-safe', '0',
         '-i', 'clips.txt',
-        '-vf', textFilterChain,
-        '-c:v', 'libx264',
-        '-pix_fmt', 'yuv420p',
-        '-r', '30',
-        '-movflags', '+faststart',
+        '-c', 'copy',
         '-y',
         'storyboard.mp4'
       ];
