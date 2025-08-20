@@ -92,7 +92,7 @@ async function synthesizeTextToPCM(text: string, config: VoiceoverConfig): Promi
       const capturedAudio = new Float32Array(totalSamples);
       
       // Generate speech-like audio pattern for this scene
-      const wordCount = text.split(' ').length;
+      // wordCount already declared above
       
       for (let i = 0; i < totalSamples; i++) {
         const time = i / sampleRate;
@@ -199,7 +199,7 @@ export async function generateVoiceover(
         const progress = time / estimatedDuration;
         
         // Generate speech-like audio pattern for this scene
-        const wordCount = text.split(' ').length;
+        // wordCount already declared above in fallback section
         const wordIndex = Math.floor(progress * wordCount);
         const wordProgress = (progress * wordCount) % 1;
         
