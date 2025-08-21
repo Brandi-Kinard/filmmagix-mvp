@@ -157,6 +157,8 @@ export type Scene = {
   keywords: string[];
   durationSec: number;
   kind: "hook" | "beat" | "cta";
+  userImage?: string; // Base64 image data from user upload
+  userImageFilename?: string; // Original filename for logging
 };
 
 // Font loading now handled by canvasCaption.ts
@@ -311,6 +313,49 @@ export async function assembleStoryboard(
       let command: string[] = [];
       
       try {
+        // Check if user has uploaded a custom image for this scene
+        let backgroundFilename: string | null = null;
+        let ffmpegInputs: string[] = [];
+        let filterInputSource: string;
+        
+        if (scene.userImage) {
+          // User has uploaded a custom image
+          log(`📷 Scene ${i + 1}: Using user-uploaded image: ${scene.userImageFilename || 'custom.jpg'}`);
+          
+          // Convert base64 to blob
+          const base64Parts = scene.userImage.split(',');
+          const binaryString = atob(base64Parts[1]);
+          const bytes = new Uint8Array(binaryString.length);
+          for (let j = 0; j < binaryString.length; j++) {
+            bytes[j] = binaryString.charCodeAt(j);
+          }
+          
+          // Write user image to FFmpeg filesystem
+          backgroundFilename = `user-scene-${i}.jpg`;
+          ffmpeg.FS('writeFile', backgroundFilename, bytes);
+          log(`📷 Scene ${i + 1}: User image written as ${backgroundFilename} (${Math.round(bytes.length / 1024)}KB)`);
+          
+          // User image input
+          ffmpegInputs = [
+            '-loop', '1',
+            '-t', String(sceneDuration),
+            '-i', backgroundFilename
+          ];
+          filterInputSource = '[0:v]';
+        } else {
+          // Use generated colored background
+          const colors = ['blue', 'green', 'purple', 'orange', 'red', 'cyan', 'yellow', 'magenta'];
+          const color = colors[i % colors.length];
+          log(`🎨 Scene ${i + 1}: Using generated ${color} background`);
+          
+          // Color source input
+          ffmpegInputs = [
+            '-f', 'lavfi',
+            '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`
+          ];
+          filterInputSource = '[0:v]';
+        }
+        
         // Generate PNG caption overlay with scene index
         log(`🖼️ Scene ${i + 1}: Rendering PNG caption for "${scene.text.substring(0, 50)}..."`);
         
@@ -323,18 +368,11 @@ export async function assembleStoryboard(
         ffmpeg.FS('writeFile', captionFilename, captionBytes);
         log(`🖼️ Scene ${i + 1}: Caption PNG written as ${captionFilename} (${Math.round(captionBytes.length / 1024)}KB)`);
         
-        // Generate colored background
-        const colors = ['blue', 'green', 'purple', 'orange', 'red', 'cyan', 'yellow', 'magenta'];
-        const color = colors[i % colors.length];
-        
-        log(`🎨 Scene ${i + 1}: Creating ${color} background with PNG overlay`);
-        
         // Create scene with PNG caption overlay (no drawtext!)
         const overlayCommand = [
-          '-f', 'lavfi',
-          '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
-          '-i', captionFilename,
-          '-filter_complex', '[0:v][1:v]overlay=0:0[final]',
+          ...ffmpegInputs,  // Background input (either user image or color)
+          '-i', captionFilename,  // Caption PNG overlay
+          '-filter_complex', `${filterInputSource}[1:v]overlay=0:0[final]`,
           '-map', '[final]',
           '-c:v', 'libx264',
           '-pix_fmt', 'yuv420p',
@@ -358,13 +396,19 @@ export async function assembleStoryboard(
             throw new Error('Generated file too small, scene generation failed');
           }
           
-          // Clean up caption PNG
+          // Clean up caption PNG and user image if present
           ffmpeg.FS('unlink', captionFilename);
+          if (backgroundFilename) {
+            try { ffmpeg.FS('unlink', backgroundFilename); } catch (e) {}
+          }
           
         } catch (sceneError) {
           log(`❌ Scene ${i + 1}: PNG overlay generation failed: ${sceneError.message}`);
           // Clean up on error
           try { ffmpeg.FS('unlink', captionFilename); } catch (e) {}
+          if (backgroundFilename) {
+            try { ffmpeg.FS('unlink', backgroundFilename); } catch (e) {}
+          }
           throw sceneError;
         }
         

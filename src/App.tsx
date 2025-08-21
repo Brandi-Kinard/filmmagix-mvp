@@ -5,6 +5,8 @@ import type { AspectKey } from "./lib/textLayout";
 import { ASPECT_CONFIGS } from "./lib/textLayout";
 import { AUDIO_TRACKS, DEFAULT_AUDIO_CONFIG, type AudioConfig, validateNarrationFile } from "./lib/audioSystem";
 import { loadCanvasFont } from "./lib/canvasCaption";
+import { validateImageFile, downscaleImage, blobToBase64 } from "./lib/imageProcessor";
+import { storeSceneImage, getSceneImage, deleteSceneImage } from "./lib/imageStorage";
 
 // Scene type is now imported from orchestrator
 
@@ -40,6 +42,8 @@ export default function App() {
   const [audioConfig, setAudioConfig] = useState<AudioConfig>(DEFAULT_AUDIO_CONFIG);
   const [fontLoaded, setFontLoaded] = useState(false);
   const [narrationError, setNarrationError] = useState<string>('');
+  const [sceneImages, setSceneImages] = useState<{[sceneId: string]: string}>({});
+  const [imageErrors, setImageErrors] = useState<{[sceneId: string]: string}>({});
   // Audio permissions state - currently not used
   // const [audioPermissionsGranted] = useState(false);
 
@@ -101,6 +105,107 @@ export default function App() {
     }
   };
 
+  // Load existing scene images when scenes are generated
+  const loadSceneImages = async (sceneList: Scene[]) => {
+    const imageMap: {[sceneId: string]: string} = {};
+    
+    for (let i = 0; i < sceneList.length; i++) {
+      const sceneId = `scene-${i}`;
+      const storedImage = await getSceneImage(sceneId);
+      if (storedImage) {
+        imageMap[sceneId] = storedImage;
+      }
+    }
+    
+    setSceneImages(imageMap);
+  };
+
+  // Handle image upload for a scene
+  const handleSceneImageUpload = async (sceneIndex: number, file: File) => {
+    const sceneId = `scene-${sceneIndex}`;
+    
+    // Clear any previous error
+    setImageErrors(prev => ({ ...prev, [sceneId]: '' }));
+    
+    // Validate file
+    const validation = validateImageFile(file);
+    if (!validation.valid) {
+      setImageErrors(prev => ({ ...prev, [sceneId]: validation.error || 'Invalid file' }));
+      return;
+    }
+    
+    try {
+      console.log(`[IMAGE] Processing upload for scene ${sceneIndex}: ${file.name}`);
+      
+      // Downscale to 1920x1080
+      const downscaledBlob = await downscaleImage(file, 1920, 1080);
+      
+      // Convert to base64
+      const base64Data = await blobToBase64(downscaledBlob);
+      
+      // Store in IndexedDB
+      await storeSceneImage(sceneId, base64Data, {
+        filename: file.name,
+        size: downscaledBlob.size,
+        width: 1920,
+        height: 1080
+      });
+      
+      // Update UI state
+      setSceneImages(prev => ({ ...prev, [sceneId]: base64Data }));
+      
+      console.log(`[IMAGE] Successfully stored image for scene ${sceneIndex}`);
+      
+    } catch (error) {
+      console.error(`[IMAGE] Failed to process image for scene ${sceneIndex}:`, error);
+      setImageErrors(prev => ({ 
+        ...prev, 
+        [sceneId]: error instanceof Error ? error.message : 'Failed to process image' 
+      }));
+    }
+  };
+
+  // Remove image for a scene
+  const handleRemoveSceneImage = async (sceneIndex: number) => {
+    const sceneId = `scene-${sceneIndex}`;
+    
+    try {
+      await deleteSceneImage(sceneId);
+      setSceneImages(prev => {
+        const newImages = { ...prev };
+        delete newImages[sceneId];
+        return newImages;
+      });
+      setImageErrors(prev => {
+        const newErrors = { ...prev };
+        delete newErrors[sceneId];
+        return newErrors;
+      });
+      
+      console.log(`[IMAGE] Removed image for scene ${sceneIndex}`);
+    } catch (error) {
+      console.error(`[IMAGE] Failed to remove image for scene ${sceneIndex}:`, error);
+    }
+  };
+
+  // Handle drag and drop
+  const handleSceneDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleSceneDrop = async (e: React.DragEvent, sceneIndex: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const files = Array.from(e.dataTransfer.files);
+    const imageFile = files.find(file => file.type.startsWith('image/'));
+    
+    if (imageFile) {
+      await handleSceneImageUpload(sceneIndex, imageFile);
+    }
+  };
+
   const onGenerate = () => {
     const text = prompt.trim();
     if (!text) return;
@@ -109,6 +214,9 @@ export default function App() {
       const generatedScenes = buildScenes(text);
       setScenes(generatedScenes);
       console.log("Generated scenes:", generatedScenes);
+      
+      // Load any existing images for these scenes
+      loadSceneImages(generatedScenes);
     } catch (error) {
       console.error("Error generating scenes:", error);
     }
@@ -126,7 +234,18 @@ export default function App() {
       console.log(`Starting storyboard export with ${scenes.length} scenes...`);
       console.time("Storyboard Export");
       
-      const videoBlob = await assembleStoryboard(scenes, { aspectRatio, audioConfig });
+      // Merge scene images into scenes for export
+      const scenesWithImages = scenes.map((scene, i) => {
+        const sceneId = `scene-${i}`;
+        const userImage = sceneImages[sceneId];
+        return {
+          ...scene,
+          userImage,
+          userImageFilename: userImage ? `custom-scene-${i}.jpg` : undefined
+        };
+      });
+      
+      const videoBlob = await assembleStoryboard(scenesWithImages, { aspectRatio, audioConfig });
       
       console.timeEnd("Storyboard Export");
       
@@ -472,7 +591,151 @@ export default function App() {
           </div>
 
           <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
-            <h3 style={{ margin: 0 }}>Preview:</h3>
+            <h3 style={{ margin: 0 }}>Scenes ({scenes.length}):</h3>
+          </div>
+          
+          {scenes.map((scene, i) => {
+            const sceneId = `scene-${i}`;
+            const hasImage = sceneImages[sceneId];
+            const imageError = imageErrors[sceneId];
+            
+            return (
+              <div key={i} style={{ 
+                padding: 12, 
+                margin: "8px 0", 
+                background: "#f5f5f5", 
+                borderRadius: 8,
+                border: hasImage ? "2px solid #4CAF50" : "2px dashed #ddd"
+              }}>
+                <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                  {/* Scene Text */}
+                  <div style={{ flex: 1 }}>
+                    <div style={{ marginBottom: 8 }}>
+                      <strong style={{ 
+                        background: scene.kind === 'hook' ? '#ff6b6b' : scene.kind === 'cta' ? '#4ecdc4' : '#45b7d1',
+                        color: 'white',
+                        padding: '2px 8px',
+                        borderRadius: 4,
+                        fontSize: 12,
+                        fontWeight: 600
+                      }}>
+                        {scene.kind.toUpperCase()}
+                      </strong>
+                      <span style={{ marginLeft: 8, fontSize: 12, color: '#666' }}>
+                        {scene.durationSec}s
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 14, lineHeight: 1.4 }}>
+                      {scene.text}
+                    </div>
+                  </div>
+                  
+                  {/* Image Upload Zone */}
+                  <div style={{ 
+                    width: 120, 
+                    height: 80,
+                    border: hasImage ? 'none' : '2px dashed #ccc',
+                    borderRadius: 6,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                    background: hasImage ? 'transparent' : '#fafafa',
+                    position: 'relative',
+                    overflow: 'hidden'
+                  }}
+                  onDragOver={handleSceneDragOver}
+                  onDrop={(e) => handleSceneDrop(e, i)}
+                  onClick={() => {
+                    const input = document.createElement('input');
+                    input.type = 'file';
+                    input.accept = 'image/*';
+                    input.onchange = (e) => {
+                      const file = (e.target as HTMLInputElement).files?.[0];
+                      if (file) handleSceneImageUpload(i, file);
+                    };
+                    input.click();
+                  }}
+                  >
+                    {hasImage ? (
+                      <>
+                        <img 
+                          src={hasImage} 
+                          alt={`Scene ${i + 1}`}
+                          style={{ 
+                            width: '100%', 
+                            height: '100%', 
+                            objectFit: 'cover',
+                            borderRadius: 4
+                          }}
+                        />
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRemoveSceneImage(i);
+                          }}
+                          style={{
+                            position: 'absolute',
+                            top: 4,
+                            right: 4,
+                            width: 20,
+                            height: 20,
+                            borderRadius: '50%',
+                            border: 'none',
+                            background: 'rgba(255,255,255,0.9)',
+                            color: '#666',
+                            fontSize: 12,
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
+                          }}
+                          title="Remove image"
+                        >
+                          ×
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{ fontSize: 24, color: '#ccc', marginBottom: 4 }}>📷</div>
+                        <div style={{ fontSize: 10, color: '#999', textAlign: 'center' }}>Click or drop image</div>
+                      </>
+                    )}
+                  </div>
+                </div>
+                
+                {/* Image Error */}
+                {imageError && (
+                  <div style={{ 
+                    fontSize: 12, 
+                    color: '#d32f2f', 
+                    marginTop: 8,
+                    padding: 6,
+                    background: '#ffebee',
+                    borderRadius: 4
+                  }}>
+                    ⚠️ {imageError}
+                  </div>
+                )}
+                
+                {/* Image Status */}
+                {hasImage && (
+                  <div style={{ 
+                    fontSize: 11, 
+                    color: '#4CAF50', 
+                    marginTop: 8,
+                    fontWeight: 500
+                  }}>
+                    ✅ Custom image uploaded
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          
+          <div style={{ display: "flex", gap: 8, marginTop: 16, alignItems: "center" }}>
+            <h3 style={{ margin: 0 }}>Export:</h3>
             <button
               onClick={onExportStoryboard}
               disabled={exporting || !ffmpegReady}
@@ -520,11 +783,6 @@ export default function App() {
               {exporting ? "Running..." : "🧪 Run Visual Smoke Test"}
             </button>
           </div>
-          {scenes.map((scene, i) => (
-            <div key={i} style={{ padding: 8, margin: "4px 0", background: "#f5f5f5", borderRadius: 4 }}>
-              <strong>{scene.kind.toUpperCase()}</strong>: {scene.text}
-            </div>
-          ))}
         </div>
       )}
     </div>
