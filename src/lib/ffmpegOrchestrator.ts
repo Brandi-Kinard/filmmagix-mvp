@@ -304,7 +304,6 @@ export async function assembleStoryboard(
       const scene = updatedScenes[i];
       const sceneDuration = Math.max(5, scene.durationSec || 5);
       const segmentFile = `seg-${String(i).padStart(3, '0')}.mp4`;
-      const captionFile = `caption-${String(i).padStart(3, '0')}.png`;
       segmentFiles.push(segmentFile);
       
       log(`🎬 SCENE ${i + 1}: Creating ${sceneDuration}s video with PNG caption`);
@@ -312,16 +311,17 @@ export async function assembleStoryboard(
       let command: string[] = [];
       
       try {
-        // Generate PNG caption overlay
+        // Generate PNG caption overlay with scene index
         log(`🖼️ Scene ${i + 1}: Rendering PNG caption for "${scene.text.substring(0, 50)}..."`);
         
-        const captionPNG = await renderCaptionPNG(scene.text, 1920, 1080);
+        const captionPNG = await renderCaptionPNG(scene.text, 1920, 1080, i);
         const captionBuffer = await captionPNG.arrayBuffer();
         const captionBytes = new Uint8Array(captionBuffer);
         
-        // Write PNG to FFmpeg filesystem
-        ffmpeg.FS('writeFile', captionFile, captionBytes);
-        log(`🖼️ Scene ${i + 1}: Caption PNG written (${Math.round(captionBytes.length / 1024)}KB)`);
+        // Write PNG to FFmpeg filesystem with proper naming
+        const captionFilename = `caption-scene-${i}.png`;
+        ffmpeg.FS('writeFile', captionFilename, captionBytes);
+        log(`🖼️ Scene ${i + 1}: Caption PNG written as ${captionFilename} (${Math.round(captionBytes.length / 1024)}KB)`);
         
         // Generate colored background
         const colors = ['blue', 'green', 'purple', 'orange', 'red', 'cyan', 'yellow', 'magenta'];
@@ -333,7 +333,7 @@ export async function assembleStoryboard(
         const overlayCommand = [
           '-f', 'lavfi',
           '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
-          '-i', captionFile,
+          '-i', captionFilename,
           '-filter_complex', '[0:v][1:v]overlay=0:0[final]',
           '-map', '[final]',
           '-c:v', 'libx264',
@@ -345,7 +345,7 @@ export async function assembleStoryboard(
         
         command = overlayCommand;
         
-        log(`🔧 Scene ${i + 1}: Overlaying PNG caption`);
+        log(`🔧 Scene ${i + 1}: Overlaying PNG caption from ${captionFilename}`);
         
         try {
           await ffmpeg.run(...command);
@@ -359,12 +359,12 @@ export async function assembleStoryboard(
           }
           
           // Clean up caption PNG
-          ffmpeg.FS('unlink', captionFile);
+          ffmpeg.FS('unlink', captionFilename);
           
         } catch (sceneError) {
           log(`❌ Scene ${i + 1}: PNG overlay generation failed: ${sceneError.message}`);
           // Clean up on error
-          try { ffmpeg.FS('unlink', captionFile); } catch (e) {}
+          try { ffmpeg.FS('unlink', captionFilename); } catch (e) {}
           throw sceneError;
         }
         

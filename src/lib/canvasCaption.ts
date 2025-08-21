@@ -1,4 +1,4 @@
-// Canvas-based caption rendering to PNG
+// Canvas-based caption rendering to PNG - BULLETPROOF VERSION
 // Replaces FFmpeg drawtext which fails in browser environment
 
 let fontLoaded = false;
@@ -39,68 +39,196 @@ export async function loadCanvasFont(): Promise<void> {
 }
 
 /**
- * Text wrapping configuration
+ * Caption configuration with safe margins
  */
-interface TextWrapConfig {
-  maxWidth: number;
-  lineHeight: number;
-  fontSize: number;
+interface CaptionConfig {
+  width: number;
+  height: number;
+  safeMarginX: number;  // Left/right margin
+  safeMarginY: number;  // Top/bottom margin
+  maxLines: number;     // Max lines based on aspect
+  fontSize: number;     // Starting font size
+  minFontSize: number;  // Minimum font size
+  lineHeight: number;   // Line height multiplier
   fontFamily: string;
 }
 
 /**
- * Wrap text to fit within specified width
+ * Get caption configuration based on video dimensions
  */
-function wrapText(ctx: CanvasRenderingContext2D, text: string, config: TextWrapConfig): string[] {
-  const words = text.split(' ');
-  const lines: string[] = [];
-  let currentLine = '';
-
-  ctx.font = `${config.fontSize}px ${config.fontFamily}`;
-
-  for (const word of words) {
-    const testLine = currentLine ? `${currentLine} ${word}` : word;
-    const metrics = ctx.measureText(testLine);
-    
-    if (metrics.width <= config.maxWidth) {
-      currentLine = testLine;
-    } else {
-      if (currentLine) {
-        lines.push(currentLine);
-        currentLine = word;
-      } else {
-        // Word is too long, force break
-        lines.push(word);
-      }
-    }
-  }
+function getCaptionConfig(width: number, height: number): CaptionConfig {
+  const isPortrait = height > width;
   
-  if (currentLine) {
-    lines.push(currentLine);
-  }
-
-  return lines;
+  return {
+    width,
+    height,
+    safeMarginX: 64,  // 64px left/right margins
+    safeMarginY: 48,  // 48px top/bottom margins
+    maxLines: isPortrait ? 4 : 6,  // 4 lines portrait, 6 landscape
+    fontSize: height >= 1080 ? 56 : 48,  // Start with larger font
+    minFontSize: 24,  // Don't go below 24px
+    lineHeight: 1.3,  // Line height multiplier
+    fontFamily: fontLoaded ? 'NotoSans, sans-serif' : 'Arial, sans-serif'
+  };
 }
 
 /**
- * Render caption text as PNG overlay
+ * Wrap text with word boundaries (no hyphenation)
+ */
+function wrapText(
+  ctx: CanvasRenderingContext2D, 
+  text: string, 
+  maxWidth: number,
+  fontSize: number,
+  fontFamily: string
+): string[] {
+  ctx.font = `${fontSize}px ${fontFamily}`;
+  
+  // Handle explicit newlines first
+  const paragraphs = text.split(/\\n|\n/);
+  const allLines: string[] = [];
+  
+  for (const paragraph of paragraphs) {
+    const words = paragraph.trim().split(/\s+/);
+    let currentLine = '';
+    
+    for (const word of words) {
+      const testLine = currentLine ? `${currentLine} ${word}` : word;
+      const metrics = ctx.measureText(testLine);
+      
+      if (metrics.width <= maxWidth && currentLine) {
+        currentLine = testLine;
+      } else if (metrics.width <= maxWidth && !currentLine) {
+        // First word on line
+        currentLine = word;
+      } else {
+        // Line would exceed width
+        if (currentLine) {
+          allLines.push(currentLine);
+        }
+        
+        // Check if single word is too wide
+        if (ctx.measureText(word).width > maxWidth) {
+          // Word is too wide even alone - this shouldn't happen with proper font sizing
+          console.warn(`[CANVAS] Word too wide: "${word}" at ${fontSize}px`);
+          allLines.push(word); // Add it anyway to avoid losing content
+          currentLine = '';
+        } else {
+          currentLine = word;
+        }
+      }
+    }
+    
+    // Add remaining text
+    if (currentLine) {
+      allLines.push(currentLine);
+    }
+  }
+  
+  return allLines;
+}
+
+/**
+ * Find optimal font size that fits text within constraints
+ */
+function findOptimalFontSize(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  config: CaptionConfig
+): { fontSize: number; lines: string[] } {
+  const maxWidth = config.width - (config.safeMarginX * 2);
+  const maxHeight = config.height * 0.3; // Use bottom 30% of screen for captions
+  
+  let fontSize = config.fontSize;
+  let lines: string[] = [];
+  let fits = false;
+  
+  // Try progressively smaller font sizes until text fits
+  while (fontSize >= config.minFontSize && !fits) {
+    lines = wrapText(ctx, text, maxWidth, fontSize, config.fontFamily);
+    
+    const totalHeight = lines.length * fontSize * config.lineHeight;
+    
+    if (lines.length <= config.maxLines && totalHeight <= maxHeight) {
+      fits = true;
+    } else {
+      fontSize -= 2; // Decrease by 2px each iteration
+    }
+  }
+  
+  // If still doesn't fit, truncate to max lines
+  if (lines.length > config.maxLines) {
+    lines = lines.slice(0, config.maxLines);
+    console.warn(`[CANVAS] Text truncated to ${config.maxLines} lines at min font size ${fontSize}px`);
+  }
+  
+  console.log(`[CANVAS] Optimal font size: ${fontSize}px, ${lines.length} lines`);
+  return { fontSize, lines };
+}
+
+/**
+ * Draw text with shadow/outline for readability
+ */
+function drawTextWithEffects(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  fontSize: number,
+  fontFamily: string
+): void {
+  ctx.font = `${fontSize}px ${fontFamily}`;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  
+  // Draw shadow/outline for better readability
+  // Multiple shadows for stronger effect
+  const shadows = [
+    { x: 2, y: 2, blur: 4, color: 'rgba(0, 0, 0, 0.8)' },
+    { x: 0, y: 0, blur: 8, color: 'rgba(0, 0, 0, 0.6)' },
+  ];
+  
+  for (const shadow of shadows) {
+    ctx.save();
+    ctx.shadowOffsetX = shadow.x;
+    ctx.shadowOffsetY = shadow.y;
+    ctx.shadowBlur = shadow.blur;
+    ctx.shadowColor = shadow.color;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0)'; // Transparent fill for shadow only
+    ctx.fillText(text, x, y);
+    ctx.restore();
+  }
+  
+  // Draw black outline
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)';
+  ctx.lineWidth = 2;
+  ctx.strokeText(text, x, y);
+  
+  // Draw white main text
+  ctx.fillStyle = 'white';
+  ctx.fillText(text, x, y);
+}
+
+/**
+ * Render caption text as PNG overlay - BULLETPROOF VERSION
  */
 export async function renderCaptionPNG(
   text: string,
   width: number = 1920,
-  height: number = 1080
+  height: number = 1080,
+  sceneIndex?: number
 ): Promise<Blob> {
   
-  console.log(`[CANVAS] Rendering caption: "${text.substring(0, 50)}..."`);
+  console.log(`[CANVAS] Rendering caption ${sceneIndex !== undefined ? `for scene ${sceneIndex}` : ''}: "${text.substring(0, 50)}..."`);
   
   // Ensure font is loaded
   await loadCanvasFont();
   
-  // Create canvas
+  // Create canvas with proper dimensions
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { alpha: true });
   
   if (!ctx) {
     throw new Error('Failed to get canvas 2D context');
@@ -109,88 +237,94 @@ export async function renderCaptionPNG(
   // Clear canvas (transparent background)
   ctx.clearRect(0, 0, width, height);
   
-  // Text configuration with safe margins
-  const safeMargin = width * 0.05; // 5% margin on each side
-  const maxWidth = width - (safeMargin * 2);
-  const fontSize = Math.floor(width / 34); // Responsive font size
-  const lineHeight = fontSize * 1.2;
-  const fontFamily = fontLoaded ? 'NotoSans, sans-serif' : 'Arial, sans-serif';
+  // Get configuration
+  const config = getCaptionConfig(width, height);
   
-  const textConfig: TextWrapConfig = {
-    maxWidth,
-    lineHeight,
-    fontSize,
-    fontFamily
-  };
+  // Find optimal font size and wrap text
+  const { fontSize, lines } = findOptimalFontSize(ctx, text, config);
   
-  // Wrap text
-  const lines = wrapText(ctx, text, textConfig);
-  console.log(`[CANVAS] Text wrapped to ${lines.length} lines`);
+  if (lines.length === 0) {
+    console.warn('[CANVAS] No text to render');
+    return new Blob([new ArrayBuffer(0)], { type: 'image/png' });
+  }
   
-  // Calculate vertical positioning (bottom third of screen)
+  // Calculate positioning (bottom area of screen)
+  const lineHeight = fontSize * config.lineHeight;
   const totalTextHeight = lines.length * lineHeight;
-  const startY = height * 0.86 - totalTextHeight; // Position from bottom
+  const bottomMargin = config.safeMarginY;
+  const startY = height - bottomMargin - totalTextHeight;
   
-  // Set text style
-  ctx.font = `${fontSize}px ${fontFamily}`;
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
+  console.log(`[CANVAS] Rendering ${lines.length} lines at ${fontSize}px, starting at Y=${startY}`);
   
-  // Render each line with background box
+  // Draw background box for better readability
+  const boxPadding = 16;
+  const maxLineWidth = Math.max(...lines.map(line => {
+    ctx.font = `${fontSize}px ${config.fontFamily}`;
+    return ctx.measureText(line).width;
+  }));
+  
+  // Semi-transparent background box
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+  ctx.fillRect(
+    config.safeMarginX - boxPadding,
+    startY - boxPadding,
+    maxLineWidth + (boxPadding * 2),
+    totalTextHeight + (boxPadding * 2)
+  );
+  
+  // Render each line with effects
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const y = startY + (i * lineHeight);
-    const metrics = ctx.measureText(line);
     
-    // Background box with padding
-    const boxPadding = 14;
-    const boxX = safeMargin - boxPadding;
-    const boxY = y - boxPadding;
-    const boxWidth = metrics.width + (boxPadding * 2);
-    const boxHeight = fontSize + (boxPadding * 2);
-    
-    // Semi-transparent background
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
-    ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
-    
-    // Text shadow for better readability
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-    ctx.fillText(line, safeMargin + 1, y + 1);
-    
-    // Main text
-    ctx.fillStyle = 'white';
-    ctx.fillText(line, safeMargin, y);
+    drawTextWithEffects(
+      ctx,
+      line,
+      config.safeMarginX,  // Left aligned with margin
+      y,
+      fontSize,
+      config.fontFamily
+    );
   }
   
   // Convert to PNG blob
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
       if (blob) {
-        console.log(`[CANVAS] ✓ Caption PNG rendered: ${Math.round(blob.size / 1024)}KB`);
+        console.log(`[CANVAS] ✓ Caption PNG rendered: ${Math.round(blob.size / 1024)}KB, ${lines.length} lines @ ${fontSize}px`);
         resolve(blob);
       } else {
         reject(new Error('Failed to create PNG blob'));
       }
-    }, 'image/png');
+    }, 'image/png', 1.0); // Maximum quality
   });
 }
 
 /**
- * Test function to verify caption rendering
+ * Test function with torture prompt
  */
 export async function testCaptionRendering(): Promise<void> {
   try {
-    console.log('[CANVAS] Testing caption rendering...');
+    console.log('[CANVAS] Testing caption rendering with torture prompt...');
     
-    const testText = "Welcome to FilmMagix! This is a test of our new Canvas-based caption rendering system that replaces the problematic FFmpeg drawtext filter.";
+    const torturePrompt = "Breaking news: A storm approaches the city, canceling flights, flooding subways, and forcing residents to evacuate—yet a single cat calmly guards the bakery.";
     
-    const pngBlob = await renderCaptionPNG(testText);
+    // Test portrait
+    console.log('[CANVAS] Testing portrait (1080x1920)...');
+    const portraitBlob = await renderCaptionPNG(torturePrompt, 1080, 1920);
+    console.log(`[CANVAS] ✓ Portrait test successful: ${Math.round(portraitBlob.size / 1024)}KB`);
     
-    console.log(`[CANVAS] ✓ Test successful: Generated ${Math.round(pngBlob.size / 1024)}KB PNG`);
+    // Test landscape
+    console.log('[CANVAS] Testing landscape (1920x1080)...');
+    const landscapeBlob = await renderCaptionPNG(torturePrompt, 1920, 1080);
+    console.log(`[CANVAS] ✓ Landscape test successful: ${Math.round(landscapeBlob.size / 1024)}KB`);
     
-    // Optional: Create download link for testing
-    const url = URL.createObjectURL(pngBlob);
-    console.log(`[CANVAS] Test PNG available at: ${url}`);
+    // Test with explicit newlines
+    const newlineTest = "First line\nSecond line\nThird line";
+    const newlineBlob = await renderCaptionPNG(newlineTest, 1920, 1080);
+    console.log(`[CANVAS] ✓ Newline test successful: ${Math.round(newlineBlob.size / 1024)}KB`);
+    
+    console.log('[CANVAS] ✅ All caption tests passed!');
     
   } catch (error) {
     console.error('[CANVAS] ✗ Test failed:', error);
