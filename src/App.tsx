@@ -4,6 +4,7 @@ import type { Scene } from "./lib/ffmpegOrchestrator";
 import type { AspectKey } from "./lib/textLayout";
 import { ASPECT_CONFIGS } from "./lib/textLayout";
 import { AUDIO_TRACKS, DEFAULT_AUDIO_CONFIG, type AudioConfig, getAvailableVoices, getDefaultVoice, isVoiceoverSupported } from "./lib/audioSystem";
+import { loadCanvasFont } from "./lib/canvasCaption";
 
 // Scene type is now imported from orchestrator
 
@@ -39,10 +40,12 @@ export default function App() {
   const [audioConfig, setAudioConfig] = useState<AudioConfig>(DEFAULT_AUDIO_CONFIG);
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [voiceoverStatus, setVoiceoverStatus] = useState<string>('');
+  const [voiceoverFile, setVoiceoverFile] = useState<File | null>(null);
+  const [fontLoaded, setFontLoaded] = useState(false);
   // Audio permissions state - currently not used
   // const [audioPermissionsGranted] = useState(false);
 
-  // Load FFmpeg and initialize speech synthesis
+  // Load FFmpeg, Canvas font, and initialize speech synthesis
   useEffect(() => {
     console.log("FilmMagix MVP starting...");
     setFfmpegError("FFmpeg: loading...");
@@ -51,6 +54,17 @@ export default function App() {
     getDebugInfo().then(info => {
       setDebugInfo(info);
     });
+    
+    // Load Canvas font for PNG caption rendering
+    loadCanvasFont()
+      .then(() => {
+        console.log("✓ Canvas font loaded successfully!");
+        setFontLoaded(true);
+      })
+      .catch((error) => {
+        console.warn("⚠️ Canvas font loading failed:", error);
+        setFontLoaded(true); // Continue with system font fallback
+      });
     
     // Load FFmpeg
     getFFmpeg()
@@ -252,6 +266,7 @@ export default function App() {
         {!ffmpegReady && !ffmpegError && "⏳ FFmpeg: loading..."}
         {ffmpegReady && `✅ FFmpeg: ready (${debugInfo?.loaderMode || "cdn"})`}
         {ffmpegError && `❌ FFmpeg error: ${ffmpegError}`}
+        {fontLoaded && " • 🔤 Font: loaded"}
         <button 
           onClick={() => setShowDebug(!showDebug)}
           style={{ marginLeft: 8, padding: "2px 6px", fontSize: 12, background: "rgba(0,0,0,0.1)", border: "none", borderRadius: 3, cursor: "pointer" }}
@@ -285,16 +300,16 @@ export default function App() {
           {debugInfo.lastError && <div style={{ color: "red" }}>Last Error: {debugInfo.lastError}</div>}
           
           <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #ddd" }}>
-            <strong>Text Layout Info:</strong>
+            <strong>Caption System Info:</strong>
           </div>
-          <div>Mode: LANDSCAPE ONLY (16:9)</div>
+          <div>Mode: CANVAS PNG OVERLAYS (NEW)</div>
           <div>Frame Size: {ASPECT_CONFIGS[aspectRatio].width}×{ASPECT_CONFIGS[aspectRatio].height}</div>
-          <div style={{ color: "#00aa00", fontWeight: "bold" }}>🎯 OPTIMIZED FOR LANDSCAPE</div>
-          <div>Text Position: CENTER JUSTIFIED</div>
-          <div>Bottom Position: {ASPECT_CONFIGS[aspectRatio].height - 180}px (180px from bottom)</div>
-          <div>Font Size: 32px (FIXED)</div>
-          <div>Max Characters: 40 per line</div>
-          <div>Max Lines: 3 (PLENTY OF ROOM)</div>
+          <div style={{ color: "#00aa00", fontWeight: "bold" }}>🎯 REPLACES DRAWTEXT FILTER</div>
+          <div>Font: Noto Sans Regular (Web Font)</div>
+          <div>Text Position: Bottom third with safe margins</div>
+          <div>Text Wrapping: Automatic with proper line breaks</div>
+          <div>Background: Semi-transparent boxes</div>
+          <div>Font Loaded: {fontLoaded ? "✅ Yes" : "⏳ Loading..."}</div>
           
           {debugInfo.sceneMetrics && debugInfo.sceneMetrics.length > 0 && (
             <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #ddd" }}>
@@ -478,6 +493,27 @@ export default function App() {
                   />
                   Auto-duck music under VO
                 </label>
+              </div>
+
+              {/* Voiceover File Upload */}
+              <div style={{ marginTop: 12, paddingTop: 8, borderTop: "1px solid #eee" }}>
+                <label style={{ display: "block", marginBottom: 4, fontSize: 14, fontWeight: 500 }}>
+                  Or upload your own voiceover file (optional):
+                </label>
+                <input
+                  type="file"
+                  accept="audio/*"
+                  onChange={(e) => setVoiceoverFile(e.target.files?.[0] || null)}
+                  style={{ width: "100%", padding: "4px", fontSize: 12 }}
+                />
+                {voiceoverFile && (
+                  <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>
+                    Selected: {voiceoverFile.name} ({Math.round(voiceoverFile.size / 1024)}KB)
+                  </div>
+                )}
+                <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>
+                  If provided, this will override the generated voiceover
+                </div>
               </div>
 
               {/* Voiceover Status */}

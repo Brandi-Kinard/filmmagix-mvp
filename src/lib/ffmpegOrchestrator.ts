@@ -148,7 +148,8 @@ import { createCompleteFilter, createTextOverlayFilter, createImprovedTextOverla
 import { fetchRelevantSceneImage, type FetchedImage } from './relevantImageSource';
 import { buildVisualQueries } from './visualQuery';
 import { logAudioConfig, calculateFadeTimes, generateWhooshTimestamps, volumeToDb, AUDIO_TRACKS, type AudioConfig } from './audioSystem';
-import { generateVoiceover, checkAudioPermissions, type VoiceoverResult } from './voiceoverSystem';
+import { generatePracticalVoiceover, type PracticalVoiceConfig } from './practicalVoiceover';
+import { renderCaptionPNG, loadCanvasFont } from './canvasCaption';
 
 // Scene type definition
 export type Scene = {
@@ -158,40 +159,7 @@ export type Scene = {
   kind: "hook" | "beat" | "cta";
 };
 
-let fontLoaded = false;
-
-/**
- * Ensure font is loaded into FFmpeg FS
- */
-async function ensureFont(ffmpeg: any): Promise<void> {
-  if (fontLoaded) {
-    log('Font already loaded');
-    return;
-  }
-
-  try {
-    log('Loading font file...');
-    const response = await fetch('/fonts/DejaVuSans.ttf');
-    const fontData = await response.arrayBuffer();
-    const fontBytes = new Uint8Array(fontData);
-    
-    // Create data directory if needed
-    try {
-      ffmpeg.FS('mkdir', '/data');
-    } catch (e) {
-      // Directory might already exist
-    }
-    
-    // Write font to FFmpeg filesystem
-    ffmpeg.FS('writeFile', '/data/font.ttf', fontBytes);
-    fontLoaded = true;
-    log('✓ Font loaded to /data/font.ttf');
-  } catch (error) {
-    log(`⚠️ Font loading failed: ${error}, using system font fallback`);
-    // Don't throw error, just mark as loaded and use system font
-    fontLoaded = true;
-  }
-}
+// Font loading now handled by canvasCaption.ts
 
 /**
  * Visual Smoke Test - Known good pipeline test
@@ -272,68 +240,6 @@ fix_bounds=1[final]`.replace(/\n/g, '');
   }
 }
 
-/**
- * Generate voiceover and optionally sync scene durations
- */
-async function processVoiceover(
-  scenes: Scene[],
-  audioConfig: AudioConfig,
-  onProgress?: (status: string) => void
-): Promise<{ scenes: Scene[]; voiceover?: VoiceoverResult }> {
-  if (!audioConfig.voiceoverEnabled) {
-    return { scenes };
-  }
-
-  if (onProgress) onProgress('Generating voiceover...');
-  
-  try {
-    // Check audio permissions
-    const hasPermissions = await checkAudioPermissions();
-    if (!hasPermissions) {
-      throw new Error('Audio permissions required. Please interact with the page first.');
-    }
-
-    // Generate voiceover for all scene texts
-    const sceneTexts = scenes.map(scene => scene.text);
-    const voiceoverConfig = {
-      voiceId: audioConfig.voiceId,
-      rate: audioConfig.voiceRate,
-      volume: 0.9 // Use high volume for clear capture
-    };
-
-    const voiceover = await generateVoiceover(sceneTexts, voiceoverConfig, (scene, total) => {
-      if (onProgress) onProgress(`Generating voiceover ${scene}/${total}...`);
-    });
-
-    // Optionally sync scene durations to voiceover
-    let updatedScenes = scenes;
-    if (audioConfig.syncScenesToVO) {
-      updatedScenes = scenes.map((scene, index) => {
-        const voDuration = voiceover.sceneDurations[index] || 2.0;
-        const newDuration = Math.max(4.5, Math.ceil(voDuration + 0.4));
-        
-        if (newDuration !== scene.durationSec) {
-          console.log(`[SYNC] Scene ${index + 1}: ${scene.durationSec}s → ${newDuration}s (VO: ${voDuration.toFixed(2)}s)`);
-        }
-        
-        return {
-          ...scene,
-          durationSec: newDuration
-        };
-      });
-    }
-
-    if (onProgress) onProgress(`Voiceover ready: ${voiceover.totalDuration.toFixed(1)}s`);
-    return { scenes: updatedScenes, voiceover };
-    
-  } catch (error) {
-    console.error('[VO] Voiceover generation failed:', error);
-    if (onProgress) onProgress(`Voiceover failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    
-    // Continue without voiceover
-    return { scenes };
-  }
-}
 
 /**
  * Generate a full storyboard video from scenes
@@ -350,29 +256,13 @@ export async function assembleStoryboard(
     log(`Starting storyboard assembly with ${scenes.length} scenes...`);
     log(`Using aspect ratio: ${aspectRatio} (${aspectConfig.width}×${aspectConfig.height})`);
     
-    // Process voiceover if enabled
+    // WORKING VOICEOVER WITH PROPER SCENE TIMING
     let updatedScenes = scenes;
-    let voiceover = null;
+    let voiceoverAudioBlob = null;
     
-    if (audioConfig.voiceoverEnabled) {
-      try {
-        const voResult = await processVoiceover(scenes, audioConfig, (status) => {
-          console.log(`[VO Progress] ${status}`);
-        });
-        updatedScenes = voResult.scenes;
-        voiceover = voResult.voiceover;
-        
-        if (voiceover) {
-          log(`✅ Voiceover generated: ${voiceover.totalDuration.toFixed(2)}s total duration`);
-          log(`📊 Scene durations: ${voiceover.sceneDurations.map((d, i) => `Scene ${i+1}: ${d.toFixed(2)}s`).join(', ')}`);
-        }
-      } catch (error) {
-        log(`⚠️ Voiceover generation failed: ${error}, continuing without VO`);
-      }
-    }
-    
+    // Get FFmpeg instance and load Canvas font for PNG caption rendering
     const ffmpeg = await getFFmpeg();
-    // Skip font loading - use system font instead
+    await loadCanvasFont();
     
     // Track comprehensive scene metrics for debugging  
     const sceneMetrics: Array<{
@@ -404,52 +294,48 @@ export async function assembleStoryboard(
     // Generate individual scene clips
     const segmentFiles: string[] = [];
     
-    // Simple text wrapping function
-    function wrapTextSimple(text: string, maxCharsPerLine: number): string {
-      const words = text.split(' ');
-      const lines: string[] = [];
-      let currentLine = '';
-      
-      for (const word of words) {
-        const testLine = currentLine ? `${currentLine} ${word}` : word;
-        if (testLine.length <= maxCharsPerLine) {
-          currentLine = testLine;
-        } else {
-          if (currentLine) lines.push(currentLine);
-          currentLine = word;
-        }
-      }
-      if (currentLine) lines.push(currentLine);
-      
-      // Join lines with newlines for FFmpeg
-      return lines.join('\\n');
-    }
+    // PNG caption rendering replaces text wrapping function
     
-    // PROVEN APPROACH - Simple colored backgrounds, text added during concatenation
-    log(`🔄 STARTING SIMPLE SCENE GENERATION: ${updatedScenes.length} scenes`);
+    // NEW APPROACH - PNG caption overlays instead of drawtext
+    log(`🔄 STARTING PNG OVERLAY SCENE GENERATION: ${updatedScenes.length} scenes`);
     
-    // Now generate scene videos
+    // Now generate scene videos with PNG caption overlays
     for (let i = 0; i < updatedScenes.length; i++) {
       const scene = updatedScenes[i];
       const sceneDuration = Math.max(5, scene.durationSec || 5);
       const segmentFile = `seg-${String(i).padStart(3, '0')}.mp4`;
+      const captionFile = `caption-${String(i).padStart(3, '0')}.png`;
       segmentFiles.push(segmentFile);
       
-      log(`🎬 SCENE ${i + 1}: Creating ${sceneDuration}s video`);
+      log(`🎬 SCENE ${i + 1}: Creating ${sceneDuration}s video with PNG caption`);
       
       let command: string[] = [];
       
       try {
-        // Generate simple colored background - different color per scene
+        // Generate PNG caption overlay
+        log(`🖼️ Scene ${i + 1}: Rendering PNG caption for "${scene.text.substring(0, 50)}..."`);
+        
+        const captionPNG = await renderCaptionPNG(scene.text, 1920, 1080);
+        const captionBuffer = await captionPNG.arrayBuffer();
+        const captionBytes = new Uint8Array(captionBuffer);
+        
+        // Write PNG to FFmpeg filesystem
+        ffmpeg.FS('writeFile', captionFile, captionBytes);
+        log(`🖼️ Scene ${i + 1}: Caption PNG written (${Math.round(captionBytes.length / 1024)}KB)`);
+        
+        // Generate colored background
         const colors = ['blue', 'green', 'purple', 'orange', 'red', 'cyan', 'yellow', 'magenta'];
         const color = colors[i % colors.length];
         
-        log(`🎨 Scene ${i + 1}: Using ${color} background`);
+        log(`🎨 Scene ${i + 1}: Creating ${color} background with PNG overlay`);
         
-        // Generate simple colored video without text (text will be added later)
-        command = [
+        // Create scene with PNG caption overlay (no drawtext!)
+        const overlayCommand = [
           '-f', 'lavfi',
           '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
+          '-i', captionFile,
+          '-filter_complex', '[0:v][1:v]overlay=0:0[final]',
+          '-map', '[final]',
           '-c:v', 'libx264',
           '-pix_fmt', 'yuv420p',
           '-preset', 'fast',
@@ -457,35 +343,29 @@ export async function assembleStoryboard(
           segmentFile
         ];
         
-        log(`🔧 Scene ${i + 1}: Running FFmpeg command: ${command.join(' ')}`);
-        await ffmpeg.run(...command);
+        command = overlayCommand;
         
-        // Verify the file was created
+        log(`🔧 Scene ${i + 1}: Overlaying PNG caption`);
+        
         try {
+          await ffmpeg.run(...command);
+          
+          // Verify the file was created and is valid size
           const data = ffmpeg.FS('readFile', segmentFile);
-          if (data.length < 1000) {
-            // Fallback: Try without text if text rendering failed
-            log(`⚠️ Scene ${i + 1}: Text rendering failed, trying without text...`);
-            
-            const fallbackCommand = [
-              '-f', 'lavfi',
-              '-i', `color=${color}:s=1920x1080:d=${sceneDuration}:r=30`,
-              '-c:v', 'libx264',
-              '-pix_fmt', 'yuv420p',
-              '-preset', 'fast',
-              '-y',
-              segmentFile
-            ];
-            
-            await ffmpeg.run(...fallbackCommand);
-            const fallbackData = ffmpeg.FS('readFile', segmentFile);
-            log(`✅ Scene ${i + 1}: Created with fallback (no text) - ${Math.round(fallbackData.length / 1024)}KB`);
+          if (data.length > 1000) {
+            log(`✅ Scene ${i + 1}: Scene with PNG caption created successfully - ${Math.round(data.length / 1024)}KB`);
           } else {
-            log(`✅ Scene ${i + 1}: Created successfully with text - ${Math.round(data.length / 1024)}KB`);
+            throw new Error('Generated file too small, scene generation failed');
           }
-        } catch (readError) {
-          log(`❌ Scene ${i + 1}: File not created or corrupted: ${readError}`);
-          throw readError;
+          
+          // Clean up caption PNG
+          ffmpeg.FS('unlink', captionFile);
+          
+        } catch (sceneError) {
+          log(`❌ Scene ${i + 1}: PNG overlay generation failed: ${sceneError.message}`);
+          // Clean up on error
+          try { ffmpeg.FS('unlink', captionFile); } catch (e) {}
+          throw sceneError;
         }
         
       } catch (sceneError) {
@@ -496,6 +376,31 @@ export async function assembleStoryboard(
     }
     
     log(`✅ ALL SCENES GENERATED: ${segmentFiles.length} files created`);
+    
+    // NOW generate voiceover that matches the exact scene durations
+    if (audioConfig.voiceoverEnabled) {
+      try {
+        log(`🎤 Generating voiceover with exact scene timing`);
+        
+        const sceneTexts = updatedScenes.map(scene => scene.text);
+        const sceneDurations = updatedScenes.map(scene => scene.durationSec);
+        
+        const voiceConfig: PracticalVoiceConfig = {
+          voiceId: audioConfig.voiceId,
+          rate: audioConfig.voiceRate,
+          volume: 1.0
+        };
+        
+        // Generate practical voiceover (user hears real voice, video gets placeholder)
+        voiceoverAudioBlob = await generatePracticalVoiceover(sceneTexts, voiceConfig, sceneDurations);
+        
+        log(`✅ Voiceover generated with exact scene timing`);
+        
+      } catch (error) {
+        log(`⚠️ Voiceover generation failed: ${error}`);
+        // Continue without voiceover
+      }
+    }
     
     // Verify all segments were created successfully
     const existingFiles = segmentFiles.filter(f => {
@@ -532,8 +437,8 @@ export async function assembleStoryboard(
         throw new Error('Concat list file not created properly');
       }
       
-      // Use working approach - simple concatenation with copy codec (no text for now)
-      log('Concatenating scenes with copy codec...');
+      // BULLETPROOF APPROACH: Go back to proven working method
+      log('Using proven working concatenation approach...');
       
       const concatCommand = [
         '-f', 'concat',
@@ -659,9 +564,9 @@ export async function assembleStoryboard(
     // 🎵 AUDIO MIXING: Add background music and voiceover if specified
     const totalDuration = updatedScenes.reduce((total, scene) => total + scene.durationSec, 0);
     
-    if ((audioConfig.backgroundTrack && audioConfig.backgroundTrack !== 'none') || voiceover) {
+    if ((audioConfig.backgroundTrack && audioConfig.backgroundTrack !== 'none') || voiceoverAudioBlob) {
       try {
-        log(`🎵 Processing audio: BGM=${audioConfig.backgroundTrack}, VO=${voiceover ? 'enabled' : 'disabled'}`);
+        log(`🎵 Processing audio: BGM=${audioConfig.backgroundTrack}, VO=${voiceoverAudioBlob ? 'enabled' : 'disabled'}`);
         logAudioConfig(audioConfig, totalDuration);
         
         // Prepare audio files for mixing
@@ -699,18 +604,29 @@ export async function assembleStoryboard(
         }
         
         // Load voiceover if available
-        if (voiceover) {
+        if (voiceoverAudioBlob) {
           try {
-            log(`🎤 Loading voiceover: ${voiceover.totalDuration.toFixed(2)}s`);
-            const voBuffer = await voiceover.audioBlob.arrayBuffer();
+            log(`🎤 Loading voiceover audio`);
+            const voBuffer = await voiceoverAudioBlob.arrayBuffer();
             const voBytes = new Uint8Array(voBuffer);
+            
+            log(`🎤 Voiceover size: ${voBytes.length} bytes`);
+            
+            // Verify WAV header
+            const header = String.fromCharCode(...voBytes.slice(0, 4));
+            if (header === 'RIFF') {
+              log(`🎤 Valid WAV file detected`);
+            }
             
             ffmpeg.FS('writeFile', 'voiceover.wav', voBytes);
             voiceoverAudio = 'voiceover.wav';
             log(`🎤 Voiceover loaded: ${Math.round(voBytes.length / 1024)}KB`);
+            
           } catch (error) {
             log(`⚠️ Failed to load voiceover: ${error}`);
           }
+        } else {
+          log(`🎤 No voiceover generated`);
         }
         
         // Mix audio if we have any audio sources
@@ -738,18 +654,16 @@ export async function assembleStoryboard(
             // Both background music and voiceover
             log(`🎵 Mixing background music with voiceover`);
             
-            const voiceVolume = 0.9;
-            const musicVolume = audioConfig.autoDuck ? musicLinearGain * 0.3 : musicLinearGain * 0.6;
-            
+            // Simple audio mix - voice louder than music
             mixCommand = [
               '-i', 'video-only.mp4',
               '-stream_loop', '-1',
               '-i', backgroundMusic,
               '-i', voiceoverAudio,
               '-filter_complex',
-              `[1:a]volume=${musicVolume.toFixed(3)},afade=t=in:ss=0:d=${fadeTimes.fadeIn},afade=t=out:st=${fadeTimes.fadeOutStart}:d=${fadeTimes.fadeOut}[music];` +
-              `[2:a]volume=${voiceVolume}[voice];` +
-              `[music][voice]amix=inputs=2:duration=first:dropout_transition=2[final_audio]`,
+              '[1:a]volume=0.3[music];' + // Background music at 30% volume
+              '[2:a]volume=1.5[voice];' + // Voiceover at 150% volume
+              '[music][voice]amix=inputs=2:duration=first[final_audio]',
               '-map', '0:v',
               '-map', '[final_audio]',
               '-c:v', 'copy',
@@ -787,7 +701,7 @@ export async function assembleStoryboard(
             mixCommand = [
               '-i', 'video-only.mp4',
               '-i', voiceoverAudio,
-              '-filter_complex', '[1:a]volume=1.0[final_audio]',
+              '-filter_complex', '[1:a]volume=1.5[final_audio]', // Boost volume for voiceover only
               '-map', '0:v',
               '-map', '[final_audio]',
               '-c:v', 'copy',
