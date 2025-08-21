@@ -7,6 +7,7 @@ import { AUDIO_TRACKS, DEFAULT_AUDIO_CONFIG, type AudioConfig, validateNarration
 import { loadCanvasFont } from "./lib/canvasCaption";
 import { validateImageFile, downscaleImage, blobToBase64 } from "./lib/imageProcessor";
 import { storeSceneImage, getSceneImage, deleteSceneImage } from "./lib/imageStorage";
+import { testImageSearch } from "./lib/imageSearch";
 
 // Scene type is now imported from orchestrator
 
@@ -416,6 +417,16 @@ export default function App() {
           <div>Background: Semi-transparent boxes</div>
           <div>Font Loaded: {fontLoaded ? "✅ Yes" : "⏳ Loading..."}</div>
           
+          <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #ddd" }}>
+            <strong>🧪 Image Search Testing:</strong>
+            <button 
+              onClick={() => testImageSearch()}
+              style={{ marginLeft: 8, padding: "4px 8px", fontSize: 11, background: "#4CAF50", color: "white", border: "none", borderRadius: 3, cursor: "pointer" }}
+            >
+              Test Chef/Pasta Acceptance Criteria
+            </button>
+          </div>
+          
           {debugInfo.sceneMetrics && debugInfo.sceneMetrics.length > 0 && (
             <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #ddd" }}>
               <strong>🎬 Scene Metrics (Last Export):</strong>
@@ -425,9 +436,6 @@ export default function App() {
                   <div>📸 Image: {scene.imageSource} ({scene.imageExists ? '✓' : '✗'})
                     {scene.imageSource === 'openverse' && ' (Openverse CC0)'}
                     {scene.imageSource === 'wikimedia' && ' (Wikimedia Commons)'}
-                    {scene.imageSource === 'unsplash' && ' (Unsplash Source)'}
-                    {scene.imageSource === 'picsum' && ' (Lorem Picsum)'}
-                    {scene.imageSource === 'placeholder' && ' (Local Placeholder)'}
                     {scene.imageSource === 'user-upload' && ' (User Upload)'}
                     {scene.imageSource === 'color-fallback' && ' (Color Fallback)'}
                   </div>

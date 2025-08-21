@@ -143,7 +143,7 @@ export async function getDebugInfo() {
 
 // Import helpers
 import { computeCaptionLayout, pickBgColor, ASPECT_CONFIGS, layoutForAspect, type AspectKey, type CaptionLayoutResult } from './textLayout';
-import { findBestImage, type ImageCandidate, type ImageSearchResult } from './improvedImageSource';
+import { getRankedCandidates, type Candidate, type SearchResult } from './imageSearch';
 import { createCompleteFilter, createTextOverlayFilter, createImprovedTextOverlay, createKenBurnsFilter, createSimplifiedFilter } from './videoEffects';
 import { buildVisualQueries } from './visualQuery';
 import { logAudioConfig, calculateFadeTimes, generateWhooshTimestamps, volumeToDb, AUDIO_TRACKS, type AudioConfig, validateNarrationFile } from './audioSystem';
@@ -270,7 +270,7 @@ export async function assembleStoryboard(
       scene: number;
       // Image metrics from new system
       imageUrl: string;
-      imageSource: 'openverse' | 'wikimedia' | 'unsplash' | 'picsum' | 'placeholder' | 'user-upload' | 'color-fallback';
+      imageSource: 'openverse' | 'wikimedia' | 'user-upload' | 'color-fallback';
       imageExists: boolean;
       imageDimensions?: { width: number; height: number };
       searchQueries: string[];
@@ -350,7 +350,7 @@ export async function assembleStoryboard(
           const searchStartTime = Date.now();
           log(`🔍 Scene ${i + 1}: Searching for relevant image for "${scene.text.substring(0, 50)}..."`);
           
-          const imageResult = await findBestImage(scene.text, aspectConfig.width / aspectConfig.height);
+          const imageResult = await getRankedCandidates(scene.text, scene.kind, aspectConfig.width / aspectConfig.height);
           const searchTimeMs = Date.now() - searchStartTime;
           
           // Log all search details
@@ -364,26 +364,30 @@ export async function assembleStoryboard(
             imageUrl: '',
             imageSource: 'color-fallback',
             imageExists: false,
-            searchQueries: imageResult.image ? [imageResult.image.query] : [],
+            searchQueries: imageResult.queries,
             candidatesFound: imageResult.candidates.length,
             searchLogs: imageResult.logs,
-            processingTimeMs: searchTimeMs,
+            processingTimeMs: imageResult.processingTimeMs,
             finalBackgroundType: 'color-background'
           };
           
-          if (imageResult.success && imageResult.image) {
-            // Use found image
-            const image = imageResult.image;
-            log(`🖼️ Scene ${i + 1}: Using ${image.source} image (score: ${image.score}, query: "${image.query}")`);
+          // Check if we have a candidate meeting the threshold (score >= 3)
+          const topCandidate = imageResult.candidates.length > 0 ? imageResult.candidates[0] : null;
+          const meetsThreshold = topCandidate && (topCandidate.score || 0) >= 3;
+          
+          if (meetsThreshold && topCandidate) {
+            // Use found image that meets quality threshold
+            log(`🖼️ Scene ${i + 1}: Using ${topCandidate.source} image (score: ${topCandidate.score})`);
+            log(`🖼️ Scene ${i + 1}: Image title: "${topCandidate.title.substring(0, 80)}..."`);
             
-            sceneMetric.imageUrl = image.url.substring(0, 100) + '...';
-            sceneMetric.imageSource = image.source;
-            sceneMetric.relevanceScore = image.score;
-            sceneMetric.imageDimensions = image.width && image.height ? { width: image.width, height: image.height } : undefined;
+            sceneMetric.imageUrl = topCandidate.url.substring(0, 100) + '...';
+            sceneMetric.imageSource = topCandidate.source;
+            sceneMetric.relevanceScore = topCandidate.score;
+            sceneMetric.imageDimensions = { width: topCandidate.width, height: topCandidate.height };
             
             try {
               // Fetch the image
-              const response = await fetch(image.url);
+              const response = await fetch(topCandidate.url);
               if (response.ok) {
                 const imageBlob = await response.blob();
                 const imageBytes = new Uint8Array(await imageBlob.arrayBuffer());
@@ -424,8 +428,12 @@ export async function assembleStoryboard(
               sceneMetric.finalBackgroundType = 'color-background';
             }
           } else {
-            // Fallback to colored background if no image found
-            log(`🎨 Scene ${i + 1}: No suitable image found, using colored background`);
+            // Fallback to colored background if no image meets threshold
+            if (topCandidate) {
+              log(`🎨 Scene ${i + 1}: Best candidate score ${topCandidate.score} < 3 threshold, using colored background`);
+            } else {
+              log(`🎨 Scene ${i + 1}: No image candidates found, using colored background`);
+            }
             const colors = ['blue', 'green', 'purple', 'orange', 'red', 'cyan', 'yellow', 'magenta'];
             const color = colors[i % colors.length];
             
