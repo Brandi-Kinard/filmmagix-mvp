@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { assemblePlaceholder, assembleStoryboard, assembleVisualSmokeTest, getFFmpeg, getDebugInfo } from "./lib/ffmpegOrchestrator";
+import { assemblePlaceholder, assembleStoryboard, assembleVisualSmokeTest, getFFmpeg, getDebugInfo, setForcePackOnly, getForcePackOnly } from "./lib/ffmpegOrchestrator";
 import type { Scene } from "./lib/ffmpegOrchestrator";
 import type { AspectKey } from "./lib/textLayout";
 import { ASPECT_CONFIGS } from "./lib/textLayout";
@@ -45,6 +45,7 @@ export default function App() {
   const [narrationError, setNarrationError] = useState<string>('');
   const [sceneImages, setSceneImages] = useState<{[sceneId: string]: string}>({});
   const [imageErrors, setImageErrors] = useState<{[sceneId: string]: string}>({});
+  const [forcePackOnly, setForcePackOnlyState] = useState<boolean>(getForcePackOnly());
   // Audio permissions state - currently not used
   // const [audioPermissionsGranted] = useState(false);
 
@@ -187,6 +188,12 @@ export default function App() {
     } catch (error) {
       console.error(`[IMAGE] Failed to remove image for scene ${sceneIndex}:`, error);
     }
+  };
+
+  // Handle FORCE_PACK_ONLY toggle
+  const handleForcePackOnlyToggle = (enabled: boolean) => {
+    setForcePackOnly(enabled);
+    setForcePackOnlyState(enabled);
   };
 
   // Handle drag and drop
@@ -425,6 +432,23 @@ export default function App() {
             >
               Test Chef/Pasta Acceptance Criteria
             </button>
+          </div>
+
+          <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #ddd" }}>
+            <strong>⚡ Debug Settings:</strong>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, fontSize: 12 }}>
+              <input
+                type="checkbox"
+                checked={forcePackOnly}
+                onChange={(e) => handleForcePackOnlyToggle(e.target.checked)}
+              />
+              <span style={{ fontWeight: 500, color: forcePackOnly ? "#ff6600" : "#333" }}>
+                FORCE_PACK_ONLY (instant exports)
+              </span>
+            </label>
+            <div style={{ fontSize: 11, color: "#666", marginTop: 2, marginLeft: 20 }}>
+              Skip web image search, use pack images only for fast debugging
+            </div>
           </div>
           
           {debugInfo.sceneMetrics && debugInfo.sceneMetrics.length > 0 && (

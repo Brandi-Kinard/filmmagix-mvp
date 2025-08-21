@@ -141,9 +141,23 @@ export async function getDebugInfo() {
   };
 }
 
+// TEMP DEBUG TOGGLE - Skip web image search and force pack images only
+let FORCE_PACK_ONLY = false; // Set to true for instant exports with pack images
+
+// Debug helper functions
+export function setForcePackOnly(enabled: boolean): void {
+  FORCE_PACK_ONLY = enabled;
+  console.log(`[DEBUG] FORCE_PACK_ONLY set to: ${enabled}`);
+}
+
+export function getForcePackOnly(): boolean {
+  return FORCE_PACK_ONLY;
+}
+
 // Import helpers
 import { computeCaptionLayout, pickBgColor, ASPECT_CONFIGS, layoutForAspect, type AspectKey, type CaptionLayoutResult } from './textLayout';
 import { getRankedCandidates, type Candidate, type SearchResult } from './imageSearch';
+import { packResolver, type PackImage } from './packResolver';
 import { createCompleteFilter, createTextOverlayFilter, createImprovedTextOverlay, createKenBurnsFilter, createSimplifiedFilter } from './videoEffects';
 import { buildVisualQueries } from './visualQuery';
 import { logAudioConfig, calculateFadeTimes, generateWhooshTimestamps, volumeToDb, AUDIO_TRACKS, type AudioConfig, validateNarrationFile } from './audioSystem';
@@ -346,12 +360,40 @@ export async function assembleStoryboard(
             imageDimensions: { width: 1920, height: 1080 } // Assuming processed dimensions
           });
         } else {
-          // Find best image using improved search system
-          const searchStartTime = Date.now();
-          log(`🔍 Scene ${i + 1}: Searching for relevant image for "${scene.text.substring(0, 50)}..."`);
-          
-          const imageResult = await getRankedCandidates(scene.text, scene.kind, aspectConfig.width / aspectConfig.height);
-          const searchTimeMs = Date.now() - searchStartTime;
+          // Check FORCE_PACK_ONLY debug toggle
+          if (FORCE_PACK_ONLY) {
+            // Skip web search and use pack images directly
+            log(`[IMAGE] FORCE_PACK_ONLY: using pack`);
+            const packImage = packResolver(scene.text, scene.kind);
+            
+            sceneMetrics.push({
+              scene: i + 1,
+              imageUrl: 'pack-fallback',
+              imageSource: 'color-fallback',
+              imageExists: true,
+              searchQueries: [],
+              candidatesFound: 0,
+              searchLogs: [`FORCE_PACK_ONLY: using ${packImage.title}`],
+              processingTimeMs: 0,
+              finalBackgroundType: 'color-background'
+            });
+            
+            // Use pack colors as a colored background
+            const colors = ['blue', 'green', 'purple', 'orange', 'red', 'cyan', 'yellow', 'magenta'];
+            const color = colors[i % colors.length];
+            
+            ffmpegInputs = [
+              '-f', 'lavfi',
+              '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`
+            ];
+            filterInputSource = '[0:v]';
+          } else {
+            // Find best image using improved search system
+            const searchStartTime = Date.now();
+            log(`🔍 Scene ${i + 1}: Searching for relevant image for "${scene.text.substring(0, 50)}..."`);
+            
+            const imageResult = await getRankedCandidates(scene.text, scene.kind, aspectConfig.width / aspectConfig.height);
+            const searchTimeMs = Date.now() - searchStartTime;
           
           // Log all search details
           for (const logMsg of imageResult.logs) {
@@ -444,8 +486,9 @@ export async function assembleStoryboard(
             filterInputSource = '[0:v]';
           }
           
-          // Store scene metrics
-          sceneMetrics.push(sceneMetric);
+            // Store scene metrics
+            sceneMetrics.push(sceneMetric);
+          }
         }
         
         // Generate PNG caption overlay with scene index
