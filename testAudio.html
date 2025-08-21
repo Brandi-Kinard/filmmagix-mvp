@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Audio Test</title>
+</head>
+<body>
+    <h1>Testing Audio Loading</h1>
+    <button onclick="testAudio()">Test Load Audio</button>
+    <div id="result"></div>
+    
+    <script>
+        async function testAudio() {
+            const resultDiv = document.getElementById('result');
+            try {
+                const response = await fetch('/audio/lofi-1.wav');
+                if (response.ok) {
+                    const blob = await response.blob();
+                    resultDiv.innerHTML = `✅ Audio loaded: ${Math.round(blob.size / 1024)}KB`;
+                } else {
+                    resultDiv.innerHTML = `❌ HTTP Error: ${response.status} ${response.statusText}`;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `❌ Error: ${error.message}`;
+            }
+        }
+    </script>
+</body>
+</html>

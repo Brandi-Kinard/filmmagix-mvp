@@ -46,13 +46,6 @@ export const AUDIO_TRACKS: AudioTrack[] = [
     filename: 'tension-1.wav',
     description: 'Suspenseful ambient for mystery/thriller',
     mood: 'tension'
-  },
-  {
-    id: 'uplift-1',
-    name: 'Uplifting',
-    filename: 'uplift-1.wav',
-    description: 'Upbeat motivational for positive endings',
-    mood: 'uplift'
   }
 ];
 

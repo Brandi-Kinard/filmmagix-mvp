@@ -674,6 +674,9 @@ export async function assembleStoryboard(
             const musicGain = volumeToDb(audioConfig.musicVolume);
             const musicLinearGain = Math.pow(10, musicGain / 20);
             
+            log(`🎵 Music volume: ${audioConfig.musicVolume}% -> ${musicGain.toFixed(2)}dB -> ${musicLinearGain.toFixed(3)} linear`);
+            log(`🎵 Fade times: in=${fadeTimes.fadeIn}s, out=${fadeTimes.fadeOut}s @ ${fadeTimes.fadeOutStart}s`);
+            
             mixCommand = [
               '-i', 'video-only.mp4',
               '-stream_loop', '-1',
@@ -718,6 +721,11 @@ export async function assembleStoryboard(
               
               const finalData = ffmpeg.FS('readFile', 'final-with-audio.mp4');
               log(`🎵 ✅ Audio mixing complete: ${Math.round(finalData.length / 1024)}KB`);
+              
+              // Verify the audio was actually added
+              const originalSize = data.length;
+              const finalSize = finalData.length;
+              log(`🎵 Size comparison: Original=${Math.round(originalSize / 1024)}KB -> Final=${Math.round(finalSize / 1024)}KB`);
               
               // Clean up
               ffmpeg.FS('unlink', 'video-only.mp4');
