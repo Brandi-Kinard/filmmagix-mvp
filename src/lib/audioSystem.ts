@@ -3,12 +3,10 @@
 export interface AudioConfig {
   backgroundTrack: string;
   musicVolume: number; // 0-100
-  autoDuck: boolean;
   whooshTransitions: boolean;
-  voiceoverEnabled: boolean;
-  voiceId: string;
-  voiceRate: number; // 0.9-1.1
-  syncScenesToVO: boolean;
+  // MVP Scope: Narration is upload-only, no live TTS
+  includeNarration: boolean;
+  narrationFile: File | null;
 }
 
 export interface AudioTrack {
@@ -62,12 +60,10 @@ export const AUDIO_TRACKS: AudioTrack[] = [
 export const DEFAULT_AUDIO_CONFIG: AudioConfig = {
   backgroundTrack: 'lofi-1',
   musicVolume: 65,
-  autoDuck: true,
   whooshTransitions: false,
-  voiceoverEnabled: false,
-  voiceId: '',
-  voiceRate: 1.0,
-  syncScenesToVO: true
+  // MVP Scope: Narration disabled by default
+  includeNarration: false,
+  narrationFile: null
 };
 
 /**
@@ -117,37 +113,25 @@ export function generateWhooshTimestamps(sceneDurations: number[]): number[] {
   return timestamps;
 }
 
-/**
- * Get available Web Speech API voices
- */
-export function getAvailableVoices(): SpeechSynthesisVoice[] {
-  if (!('speechSynthesis' in window)) return [];
-  return speechSynthesis.getVoices();
-}
+// MVP Scope: Live TTS functions removed - narration is upload-only
 
 /**
- * Get a sensible default voice (prefer English, female if available)
+ * Validate uploaded narration file
  */
-export function getDefaultVoice(): string {
-  const voices = getAvailableVoices();
-  if (voices.length === 0) return '';
-  
-  // Prefer English voices
-  const englishVoices = voices.filter(v => v.lang.startsWith('en'));
-  if (englishVoices.length > 0) {
-    // Prefer female voices for better clarity
-    const femaleVoice = englishVoices.find(v => v.name.toLowerCase().includes('female') || v.name.toLowerCase().includes('samantha') || v.name.toLowerCase().includes('alex'));
-    return femaleVoice?.voiceURI || englishVoices[0].voiceURI;
+export function validateNarrationFile(file: File): { valid: boolean; error?: string } {
+  // Check file type
+  const validTypes = ['audio/wav', 'audio/mpeg', 'audio/mp3'];
+  if (!validTypes.includes(file.type)) {
+    return { valid: false, error: 'Only WAV and MP3 files are supported' };
   }
   
-  return voices[0].voiceURI;
-}
-
-/**
- * Check if Web Speech API is supported
- */
-export function isVoiceoverSupported(): boolean {
-  return 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window;
+  // Check file size (max 50MB)
+  const maxSize = 50 * 1024 * 1024;
+  if (file.size > maxSize) {
+    return { valid: false, error: 'File size must be under 50MB' };
+  }
+  
+  return { valid: true };
 }
 
 /**
@@ -157,13 +141,10 @@ export function logAudioConfig(config: AudioConfig, totalDuration: number): void
   console.log(`[AUDIO] Configuration:`);
   console.log(`  Background Track: ${config.backgroundTrack}`);
   console.log(`  Music Volume: ${config.musicVolume}% (${volumeToDb(config.musicVolume).toFixed(1)} dB)`);
-  console.log(`  Auto Duck: ${config.autoDuck ? 'ON' : 'OFF'}`);
   console.log(`  Whoosh Transitions: ${config.whooshTransitions ? 'ON' : 'OFF'}`);
-  console.log(`  Voiceover: ${config.voiceoverEnabled ? 'ON' : 'OFF'}`);
-  if (config.voiceoverEnabled) {
-    console.log(`    Voice: ${config.voiceId || 'default'}`);
-    console.log(`    Rate: ${config.voiceRate}x`);
-    console.log(`    Sync Scenes: ${config.syncScenesToVO ? 'ON' : 'OFF'}`);
+  console.log(`  Include Narration: ${config.includeNarration ? 'ON' : 'OFF'}`);
+  if (config.includeNarration && config.narrationFile) {
+    console.log(`    Narration File: ${config.narrationFile.name} (${Math.round(config.narrationFile.size / 1024)}KB)`);
   }
   
   const fadeTimes = calculateFadeTimes(totalDuration);

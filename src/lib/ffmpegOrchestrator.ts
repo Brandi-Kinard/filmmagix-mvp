@@ -147,9 +147,9 @@ import { getSceneImage, extractKeywords, getTintForKeywords, getTintForSceneType
 import { createCompleteFilter, createTextOverlayFilter, createImprovedTextOverlay, createKenBurnsFilter, createSimplifiedFilter } from './videoEffects';
 import { fetchRelevantSceneImage, type FetchedImage } from './relevantImageSource';
 import { buildVisualQueries } from './visualQuery';
-import { logAudioConfig, calculateFadeTimes, generateWhooshTimestamps, volumeToDb, AUDIO_TRACKS, type AudioConfig } from './audioSystem';
-import { generatePracticalVoiceover, type PracticalVoiceConfig } from './practicalVoiceover';
+import { logAudioConfig, calculateFadeTimes, generateWhooshTimestamps, volumeToDb, AUDIO_TRACKS, type AudioConfig, validateNarrationFile } from './audioSystem';
 import { renderCaptionPNG, loadCanvasFont } from './canvasCaption';
+// MVP Scope: Live TTS imports removed
 
 // Scene type definition
 export type Scene = {
@@ -256,9 +256,9 @@ export async function assembleStoryboard(
     log(`Starting storyboard assembly with ${scenes.length} scenes...`);
     log(`Using aspect ratio: ${aspectRatio} (${aspectConfig.width}×${aspectConfig.height})`);
     
-    // WORKING VOICEOVER WITH PROPER SCENE TIMING
+    // MVP Scope: No live voiceover generation
     let updatedScenes = scenes;
-    let voiceoverAudioBlob = null;
+    let narrationAudioBlob = null;
     
     // Get FFmpeg instance and load Canvas font for PNG caption rendering
     const ffmpeg = await getFFmpeg();
@@ -377,28 +377,24 @@ export async function assembleStoryboard(
     
     log(`✅ ALL SCENES GENERATED: ${segmentFiles.length} files created`);
     
-    // NOW generate voiceover that matches the exact scene durations
-    if (audioConfig.voiceoverEnabled) {
+    // MVP Scope: Process uploaded narration file if provided
+    if (audioConfig.includeNarration && audioConfig.narrationFile) {
       try {
-        log(`🎤 Generating voiceover with exact scene timing`);
+        log(`🎤 Processing uploaded narration file: ${audioConfig.narrationFile.name}`);
         
-        const sceneTexts = updatedScenes.map(scene => scene.text);
-        const sceneDurations = updatedScenes.map(scene => scene.durationSec);
+        // Validate the file
+        const validation = validateNarrationFile(audioConfig.narrationFile);
+        if (!validation.valid) {
+          throw new Error(`Invalid narration file: ${validation.error}`);
+        }
         
-        const voiceConfig: PracticalVoiceConfig = {
-          voiceId: audioConfig.voiceId,
-          rate: audioConfig.voiceRate,
-          volume: 1.0
-        };
-        
-        // Generate practical voiceover (user hears real voice, video gets placeholder)
-        voiceoverAudioBlob = await generatePracticalVoiceover(sceneTexts, voiceConfig, sceneDurations);
-        
-        log(`✅ Voiceover generated with exact scene timing`);
+        // Convert to blob for processing
+        narrationAudioBlob = audioConfig.narrationFile;
+        log(`✅ Narration file ready for mixing: ${Math.round(narrationAudioBlob.size / 1024)}KB`);
         
       } catch (error) {
-        log(`⚠️ Voiceover generation failed: ${error}`);
-        // Continue without voiceover
+        log(`⚠️ Narration file processing failed: ${error}`);
+        // Continue without narration
       }
     }
     
@@ -561,17 +557,17 @@ export async function assembleStoryboard(
       }
     }
     
-    // 🎵 AUDIO MIXING: Add background music and voiceover if specified
+    // 🎵 AUDIO MIXING: Add background music and narration if specified
     const totalDuration = updatedScenes.reduce((total, scene) => total + scene.durationSec, 0);
     
-    if ((audioConfig.backgroundTrack && audioConfig.backgroundTrack !== 'none') || voiceoverAudioBlob) {
+    if ((audioConfig.backgroundTrack && audioConfig.backgroundTrack !== 'none') || narrationAudioBlob) {
       try {
-        log(`🎵 Processing audio: BGM=${audioConfig.backgroundTrack}, VO=${voiceoverAudioBlob ? 'enabled' : 'disabled'}`);
+        log(`🎵 Processing audio: BGM=${audioConfig.backgroundTrack}, Narration=${narrationAudioBlob ? 'enabled' : 'disabled'}`);
         logAudioConfig(audioConfig, totalDuration);
         
         // Prepare audio files for mixing
         let backgroundMusic = null;
-        let voiceoverAudio = null;
+        let narrationAudio = null;
         
         // Load background music if specified
         if (audioConfig.backgroundTrack && audioConfig.backgroundTrack !== 'none') {
@@ -603,35 +599,34 @@ export async function assembleStoryboard(
           }
         }
         
-        // Load voiceover if available
-        if (voiceoverAudioBlob) {
+        // Load narration if available
+        if (narrationAudioBlob) {
           try {
-            log(`🎤 Loading voiceover audio`);
-            const voBuffer = await voiceoverAudioBlob.arrayBuffer();
-            const voBytes = new Uint8Array(voBuffer);
+            log(`🎤 Loading narration audio`);
+            const narrationBuffer = await narrationAudioBlob.arrayBuffer();
+            const narrationBytes = new Uint8Array(narrationBuffer);
             
-            log(`🎤 Voiceover size: ${voBytes.length} bytes`);
+            log(`🎤 Narration size: ${narrationBytes.length} bytes`);
             
-            // Verify WAV header
-            const header = String.fromCharCode(...voBytes.slice(0, 4));
-            if (header === 'RIFF') {
-              log(`🎤 Valid WAV file detected`);
-            }
+            // Determine file extension from original filename
+            const filename = narrationAudioBlob.name || 'narration.wav';
+            const extension = filename.split('.').pop()?.toLowerCase() || 'wav';
+            const narrationFilename = `narration.${extension}`;
             
-            ffmpeg.FS('writeFile', 'voiceover.wav', voBytes);
-            voiceoverAudio = 'voiceover.wav';
-            log(`🎤 Voiceover loaded: ${Math.round(voBytes.length / 1024)}KB`);
+            ffmpeg.FS('writeFile', narrationFilename, narrationBytes);
+            narrationAudio = narrationFilename;
+            log(`🎤 Narration loaded: ${Math.round(narrationBytes.length / 1024)}KB`);
             
           } catch (error) {
-            log(`⚠️ Failed to load voiceover: ${error}`);
+            log(`⚠️ Failed to load narration: ${error}`);
           }
         } else {
-          log(`🎤 No voiceover generated`);
+          log(`🎤 No narration file provided`);
         }
         
         // Mix audio if we have any audio sources
-        if (backgroundMusic || voiceoverAudio) {
-          log(`🎵 Starting audio mix: BGM=${backgroundMusic || 'none'}, VO=${voiceoverAudio || 'none'}`);
+        if (backgroundMusic || narrationAudio) {
+          log(`🎵 Starting audio mix: BGM=${backgroundMusic || 'none'}, Narration=${narrationAudio || 'none'}`);
           
           // Save video-only first
           ffmpeg.FS('writeFile', 'video-only.mp4', data);
@@ -647,23 +642,21 @@ export async function assembleStoryboard(
           // Build audio mixing command based on available audio sources
           let mixCommand: string[] = [];
           const fadeTimes = calculateFadeTimes(totalDuration);
-          const musicGain = volumeToDb(audioConfig.musicVolume);
-          const musicLinearGain = Math.pow(10, musicGain / 20);
           
-          if (backgroundMusic && voiceoverAudio) {
-            // Both background music and voiceover
-            log(`🎵 Mixing background music with voiceover`);
+          if (backgroundMusic && narrationAudio) {
+            // Both background music and narration - MVP scope settings
+            log(`🎵 Mixing background music with narration (MVP scope: 0.7 music, 1.0 narration, -3dB limiter)`);
             
-            // Simple audio mix - voice louder than music
             mixCommand = [
               '-i', 'video-only.mp4',
               '-stream_loop', '-1',
               '-i', backgroundMusic,
-              '-i', voiceoverAudio,
+              '-i', narrationAudio,
               '-filter_complex',
-              '[1:a]volume=0.3[music];' + // Background music at 30% volume
-              '[2:a]volume=1.5[voice];' + // Voiceover at 150% volume
-              '[music][voice]amix=inputs=2:duration=first[final_audio]',
+              // Music at 0.7 volume, narration at 1.0, with -3dB limiter to prevent clipping
+              '[1:a]volume=0.7,afade=t=in:ss=0:d=' + fadeTimes.fadeIn + ',afade=t=out:st=' + fadeTimes.fadeOutStart + ':d=' + fadeTimes.fadeOut + '[music];' +
+              '[2:a]volume=1.0,atrim=duration=' + totalDuration + '[narration];' +
+              '[music][narration]amix=inputs=2:duration=first,alimiter=limit=0.7:attack=1:release=50[final_audio]',
               '-map', '0:v',
               '-map', '[final_audio]',
               '-c:v', 'copy',
@@ -677,6 +670,9 @@ export async function assembleStoryboard(
           } else if (backgroundMusic) {
             // Background music only
             log(`🎵 Adding background music only`);
+            
+            const musicGain = volumeToDb(audioConfig.musicVolume);
+            const musicLinearGain = Math.pow(10, musicGain / 20);
             
             mixCommand = [
               '-i', 'video-only.mp4',
@@ -694,14 +690,14 @@ export async function assembleStoryboard(
               'final-with-audio.mp4'
             ];
             
-          } else if (voiceoverAudio) {
-            // Voiceover only
-            log(`🎤 Adding voiceover only`);
+          } else if (narrationAudio) {
+            // Narration only
+            log(`🎤 Adding narration only (stretched/trimmed to video duration)`);
             
             mixCommand = [
               '-i', 'video-only.mp4',
-              '-i', voiceoverAudio,
-              '-filter_complex', '[1:a]volume=1.5[final_audio]', // Boost volume for voiceover only
+              '-i', narrationAudio,
+              '-filter_complex', `[1:a]volume=1.0,atrim=duration=${totalDuration},alimiter=limit=0.7[final_audio]`,
               '-map', '0:v',
               '-map', '[final_audio]',
               '-c:v', 'copy',
@@ -726,7 +722,7 @@ export async function assembleStoryboard(
               // Clean up
               ffmpeg.FS('unlink', 'video-only.mp4');
               if (backgroundMusic) ffmpeg.FS('unlink', backgroundMusic);
-              if (voiceoverAudio) ffmpeg.FS('unlink', voiceoverAudio);
+              if (narrationAudio) ffmpeg.FS('unlink', narrationAudio);
               ffmpeg.FS('unlink', 'final-with-audio.mp4');
               
               data = finalData;
