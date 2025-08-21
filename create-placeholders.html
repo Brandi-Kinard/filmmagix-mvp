@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Generate Placeholder Images</title>
+</head>
+<body>
+    <h1>Placeholder Image Generator</h1>
+    <button onclick="generateAll()">Generate All Placeholders</button>
+    <div id="output"></div>
+    
+    <script>
+        const placeholders = [
+            // Urban category - cool blues and purples
+            { filename: 'urban-1.jpg', color1: '#667eea', color2: '#764ba2', text: 'URBAN' },
+            { filename: 'urban-2.jpg', color1: '#4facfe', color2: '#00f2fe', text: 'CITY' },
+            { filename: 'urban-3.jpg', color1: '#43e97b', color2: '#38f9d7', text: 'MODERN' },
+            
+            // Nature category - greens and earth tones
+            { filename: 'nature-1.jpg', color1: '#56ab2f', color2: '#a8e6cf', text: 'NATURE' },
+            { filename: 'nature-2.jpg', color1: '#134e5e', color2: '#71b280', text: 'FOREST' },
+            { filename: 'nature-3.jpg', color1: '#74b9ff', color2: '#0984e3', text: 'SKY' },
+            
+            // Abstract category - warm and creative colors
+            { filename: 'abstract-1.jpg', color1: '#fa709a', color2: '#fee140', text: 'ABSTRACT' },
+            { filename: 'abstract-2.jpg', color1: '#a770ef', color2: '#cf8bf3', text: 'CREATIVE' },
+            { filename: 'abstract-3.jpg', color1: '#ffecd2', color2: '#fcb69f', text: 'MINIMAL' }
+        ];
+
+        function createPlaceholderImage(color1, color2, text, filename) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 1920;
+            canvas.height = 1080;
+            const ctx = canvas.getContext('2d');
+
+            // Create gradient background
+            const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+            gradient.addColorStop(0, color1);
+            gradient.addColorStop(1, color2);
+            
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Add subtle texture
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+            for (let i = 0; i < 200; i++) {
+                const x = Math.random() * canvas.width;
+                const y = Math.random() * canvas.height;
+                const size = Math.random() * 3 + 1;
+                ctx.beginPath();
+                ctx.arc(x, y, size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Add text
+            ctx.font = 'bold 120px Arial, sans-serif';
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            
+            // Text shadow
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+            ctx.shadowOffsetX = 6;
+            ctx.shadowOffsetY = 6;
+            ctx.shadowBlur = 12;
+            
+            ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+            
+            // Subtitle
+            ctx.font = 'normal 48px Arial, sans-serif';
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+            ctx.shadowOffsetX = 3;
+            ctx.shadowOffsetY = 3;
+            ctx.shadowBlur = 6;
+            ctx.fillText('CC0 PLACEHOLDER', canvas.width / 2, canvas.height / 2 + 120);
+
+            return canvas;
+        }
+
+        function downloadCanvas(canvas, filename) {
+            canvas.toBlob((blob) => {
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }, 'image/jpeg', 0.9);
+        }
+
+        function generateAll() {
+            const output = document.getElementById('output');
+            output.innerHTML = '<p>Generating placeholders...</p>';
+            
+            let completed = 0;
+            
+            placeholders.forEach((placeholder, index) => {
+                setTimeout(() => {
+                    const canvas = createPlaceholderImage(
+                        placeholder.color1,
+                        placeholder.color2, 
+                        placeholder.text,
+                        placeholder.filename
+                    );
+                    
+                    downloadCanvas(canvas, placeholder.filename);
+                    
+                    completed++;
+                    output.innerHTML += `<p>✓ Generated ${placeholder.filename}</p>`;
+                    
+                    if (completed === placeholders.length) {
+                        output.innerHTML += '<p><strong>All placeholders generated! Move them to public/placeholders/</strong></p>';
+                    }
+                }, index * 500); // Stagger downloads
+            });
+        }
+    </script>
+</body>
+</html>

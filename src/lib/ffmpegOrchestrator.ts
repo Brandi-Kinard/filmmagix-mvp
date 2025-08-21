@@ -143,9 +143,8 @@ export async function getDebugInfo() {
 
 // Import helpers
 import { computeCaptionLayout, pickBgColor, ASPECT_CONFIGS, layoutForAspect, type AspectKey, type CaptionLayoutResult } from './textLayout';
-import { getSceneImage, extractKeywords, getTintForKeywords, getTintForSceneType, generateKenBurnsParams, type SceneImage, type KenBurnsParams, type TintConfig } from './imageSource';
+import { findBestImage, type ImageCandidate, type ImageSearchResult } from './improvedImageSource';
 import { createCompleteFilter, createTextOverlayFilter, createImprovedTextOverlay, createKenBurnsFilter, createSimplifiedFilter } from './videoEffects';
-import { fetchRelevantSceneImage, type FetchedImage } from './relevantImageSource';
 import { buildVisualQueries } from './visualQuery';
 import { logAudioConfig, calculateFadeTimes, generateWhooshTimestamps, volumeToDb, AUDIO_TRACKS, type AudioConfig, validateNarrationFile } from './audioSystem';
 import { renderCaptionPNG, loadCanvasFont } from './canvasCaption';
@@ -269,28 +268,18 @@ export async function assembleStoryboard(
     // Track comprehensive scene metrics for debugging  
     const sceneMetrics: Array<{
       scene: number;
-      // Text metrics
-      fontSize: number;
-      longestLine: number;
-      lineCount: number;
-      maxCharsPerLine: number;
-      safeWidthPx: number;
-      textWarnings: string[];
-      // Image metrics
+      // Image metrics from new system
       imageUrl: string;
-      imageLocalPath: string;
-      imageSource: 'ai-generated' | 'unsplash' | 'pexels' | 'fallback';
+      imageSource: 'openverse' | 'wikimedia' | 'unsplash' | 'picsum' | 'placeholder' | 'user-upload' | 'color-fallback';
       imageExists: boolean;
       imageDimensions?: { width: number; height: number };
-      keywords: string[];
+      searchQueries: string[];
       relevanceScore?: number;
-      contentType?: string;
-      aiPrompt?: string;
-      generationTime?: number;
-      // Effects metrics
-      kenBurnsParams: KenBurnsParams;
-      tintConfig: TintConfig;
-      ffmpegCommand?: string;
+      candidatesFound: number;
+      searchLogs: string[];
+      // Additional metrics
+      processingTimeMs?: number;
+      finalBackgroundType: 'downloaded-image' | 'user-image' | 'color-background';
     }> = [];
     
     // Generate individual scene clips
@@ -342,18 +331,113 @@ export async function assembleStoryboard(
             '-i', backgroundFilename
           ];
           filterInputSource = '[0:v]';
-        } else {
-          // Use generated colored background
-          const colors = ['blue', 'green', 'purple', 'orange', 'red', 'cyan', 'yellow', 'magenta'];
-          const color = colors[i % colors.length];
-          log(`🎨 Scene ${i + 1}: Using generated ${color} background`);
           
-          // Color source input
-          ffmpegInputs = [
-            '-f', 'lavfi',
-            '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`
-          ];
-          filterInputSource = '[0:v]';
+          // Store metrics for user upload
+          sceneMetrics.push({
+            scene: i + 1,
+            imageUrl: 'user-uploaded-image',
+            imageSource: 'user-upload',
+            imageExists: true,
+            searchQueries: [],
+            candidatesFound: 0,
+            searchLogs: [`User uploaded custom image: ${scene.userImageFilename || 'unknown'}`],
+            processingTimeMs: 0,
+            finalBackgroundType: 'user-image',
+            imageDimensions: { width: 1920, height: 1080 } // Assuming processed dimensions
+          });
+        } else {
+          // Find best image using improved search system
+          const searchStartTime = Date.now();
+          log(`🔍 Scene ${i + 1}: Searching for relevant image for "${scene.text.substring(0, 50)}..."`);
+          
+          const imageResult = await findBestImage(scene.text, aspectConfig.width / aspectConfig.height);
+          const searchTimeMs = Date.now() - searchStartTime;
+          
+          // Log all search details
+          for (const logMsg of imageResult.logs) {
+            log(logMsg);
+          }
+          
+          // Collect metrics for this scene
+          let sceneMetric: any = {
+            scene: i + 1,
+            imageUrl: '',
+            imageSource: 'color-fallback',
+            imageExists: false,
+            searchQueries: imageResult.image ? [imageResult.image.query] : [],
+            candidatesFound: imageResult.candidates.length,
+            searchLogs: imageResult.logs,
+            processingTimeMs: searchTimeMs,
+            finalBackgroundType: 'color-background'
+          };
+          
+          if (imageResult.success && imageResult.image) {
+            // Use found image
+            const image = imageResult.image;
+            log(`🖼️ Scene ${i + 1}: Using ${image.source} image (score: ${image.score}, query: "${image.query}")`);
+            
+            sceneMetric.imageUrl = image.url.substring(0, 100) + '...';
+            sceneMetric.imageSource = image.source;
+            sceneMetric.relevanceScore = image.score;
+            sceneMetric.imageDimensions = image.width && image.height ? { width: image.width, height: image.height } : undefined;
+            
+            try {
+              // Fetch the image
+              const response = await fetch(image.url);
+              if (response.ok) {
+                const imageBlob = await response.blob();
+                const imageBytes = new Uint8Array(await imageBlob.arrayBuffer());
+                
+                // Write image to FFmpeg filesystem
+                backgroundFilename = `scene-bg-${i}.jpg`;
+                ffmpeg.FS('writeFile', backgroundFilename, imageBytes);
+                log(`🖼️ Scene ${i + 1}: Downloaded image written as ${backgroundFilename} (${Math.round(imageBytes.length / 1024)}KB)`);
+                
+                // Image input
+                ffmpegInputs = [
+                  '-loop', '1',
+                  '-t', String(sceneDuration),
+                  '-i', backgroundFilename
+                ];
+                filterInputSource = '[0:v]';
+                
+                // Update metrics
+                sceneMetric.imageExists = true;
+                sceneMetric.finalBackgroundType = 'downloaded-image';
+              } else {
+                throw new Error(`Failed to fetch image: ${response.status}`);
+              }
+            } catch (error) {
+              log(`❌ Scene ${i + 1}: Failed to fetch image (${error}), falling back to color`);
+              // Fallback to colored background
+              const colors = ['blue', 'green', 'purple', 'orange', 'red', 'cyan', 'yellow', 'magenta'];
+              const color = colors[i % colors.length];
+              
+              ffmpegInputs = [
+                '-f', 'lavfi',
+                '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`
+              ];
+              filterInputSource = '[0:v]';
+              
+              // Keep fallback metrics
+              sceneMetric.imageExists = false;
+              sceneMetric.finalBackgroundType = 'color-background';
+            }
+          } else {
+            // Fallback to colored background if no image found
+            log(`🎨 Scene ${i + 1}: No suitable image found, using colored background`);
+            const colors = ['blue', 'green', 'purple', 'orange', 'red', 'cyan', 'yellow', 'magenta'];
+            const color = colors[i % colors.length];
+            
+            ffmpegInputs = [
+              '-f', 'lavfi',
+              '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`
+            ];
+            filterInputSource = '[0:v]';
+          }
+          
+          // Store scene metrics
+          sceneMetrics.push(sceneMetric);
         }
         
         // Generate PNG caption overlay with scene index
@@ -813,7 +897,13 @@ export async function assembleStoryboard(
     log(`✓ Cinematic storyboard generated: ${Math.round(data.length / 1024)}KB`);
     log(`📊 Final scene metrics summary:`);
     sceneMetrics.forEach(metric => {
-      log(`   Scene ${metric.scene}: ${metric.imageSource} (${metric.imageExists ? '✓' : '✗'}), ${metric.tintConfig.theme}, ${metric.kenBurnsParams.zoomDirection} zoom`);
+      const dimensions = metric.imageDimensions ? ` (${metric.imageDimensions.width}x${metric.imageDimensions.height})` : '';
+      const score = metric.relevanceScore ? ` score:${metric.relevanceScore}` : '';
+      const timing = metric.processingTimeMs ? ` ${metric.processingTimeMs}ms` : '';
+      log(`   Scene ${metric.scene}: ${metric.imageSource} (${metric.imageExists ? '✓' : '✗'})${dimensions}${score}${timing}`);
+      if (metric.searchQueries.length > 0) {
+        log(`      Queries: ${metric.searchQueries.join(', ')}`);
+      }
     });
     
     // Store metrics for debug panel

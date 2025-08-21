@@ -422,21 +422,30 @@ export default function App() {
               {debugInfo.sceneMetrics.map((scene: any, idx: number) => (
                 <div key={idx} style={{ marginTop: 6, padding: 6, background: "#f0f0f0", borderRadius: 4 }}>
                   <div><strong>Scene {scene.scene}:</strong></div>
-                  <div>📸 Image: {scene.imageSource} 
-                    {scene.imageSource === 'ai-generated' && scene.generationTime && 
-                      ` (generated in ${scene.generationTime}ms)`}
-                    {scene.imageSource === 'unsplash' && ' (Unsplash API)'}
-                    {scene.imageSource === 'fallback' && ' (Local fallback)'}
+                  <div>📸 Image: {scene.imageSource} ({scene.imageExists ? '✓' : '✗'})
+                    {scene.imageSource === 'openverse' && ' (Openverse CC0)'}
+                    {scene.imageSource === 'wikimedia' && ' (Wikimedia Commons)'}
+                    {scene.imageSource === 'unsplash' && ' (Unsplash Source)'}
+                    {scene.imageSource === 'picsum' && ' (Lorem Picsum)'}
+                    {scene.imageSource === 'placeholder' && ' (Local Placeholder)'}
+                    {scene.imageSource === 'user-upload' && ' (User Upload)'}
+                    {scene.imageSource === 'color-fallback' && ' (Color Fallback)'}
                   </div>
-                  {scene.aiPrompt && (
-                    <div>🤖 AI Prompt: {scene.aiPrompt.substring(0, 100)}...</div>
+                  {scene.relevanceScore && (
+                    <div>🏆 Relevance Score: {scene.relevanceScore}</div>
                   )}
-                  <div>🔑 Keywords: {scene.keywords.join(', ')}</div>
-                  <div>🎨 Tint: {scene.tintConfig.theme} ({scene.tintConfig.color})</div>
-                  <div>🎬 Ken Burns: {scene.kenBurnsParams.zoomDirection} zoom, {scene.kenBurnsParams.panDirection} pan</div>
-                  <div>📝 Text: {scene.fontSize}px font, {scene.lineCount} lines, {scene.longestLine} chars max</div>
-                  {scene.textWarnings.length > 0 && (
-                    <div style={{ color: "#cc6600" }}>⚠️ Warnings: {scene.textWarnings.join(', ')}</div>
+                  {scene.searchQueries && scene.searchQueries.length > 0 && (
+                    <div>🔍 Queries: {scene.searchQueries.join(', ')}</div>
+                  )}
+                  {scene.imageDimensions && (
+                    <div>📐 Dimensions: {scene.imageDimensions.width}×{scene.imageDimensions.height}</div>
+                  )}
+                  <div>⚡ Processing: {scene.processingTimeMs || 0}ms, {scene.candidatesFound} candidates</div>
+                  <div>🎬 Background: {scene.finalBackgroundType}</div>
+                  {scene.searchLogs && scene.searchLogs.length > 2 && (
+                    <div style={{ fontSize: 10, color: "#666", marginTop: 4 }}>
+                      📋 Search details: {scene.searchLogs.slice(0, 2).join('; ')}...
+                    </div>
                   )}
                 </div>
               ))}
