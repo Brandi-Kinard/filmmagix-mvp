@@ -6,6 +6,16 @@ import { loadCanvasFont } from "./lib/canvasCaption";
 import { validateImageFile, downscaleImage, blobToBase64 } from "./lib/imageProcessor";
 import { storeSceneImage, getSceneImage, deleteSceneImage } from "./lib/imageStorage";
 import { getBackgroundModeName, type BackgroundMode, type SceneBackground } from "./lib/backgroundProvider";
+import { 
+  autoSaveProject, 
+  loadAutosavedProject, 
+  clearAutosave, 
+  exportProject, 
+  importProject, 
+  applyProjectData, 
+  getMissingAssetsSummary,
+  type ProjectData 
+} from "./lib/projectPersistence";
 
 // Scene type is now imported from orchestrator
 
@@ -47,13 +57,23 @@ export default function App() {
   const [sceneImages, setSceneImages] = useState<{[sceneId: string]: string}>({});
   const [imageErrors, setImageErrors] = useState<{[sceneId: string]: string}>({});
   const [enableAI, setEnableAI] = useState(false);
+  const [showRestorePrompt, setShowRestorePrompt] = useState(false);
+  const [autosavedProject, setAutosavedProject] = useState<ProjectData | null>(null);
   // Audio permissions state - currently not used
   // const [audioPermissionsGranted] = useState(false);
 
-  // Load FFmpeg, Canvas font, and initialize speech synthesis
+  // Load FFmpeg, Canvas font, and check for autosaved project
   useEffect(() => {
     console.log("FilmMagix MVP starting...");
     setFfmpegError("FFmpeg: loading...");
+    
+    // Check for autosaved project
+    const autosaved = loadAutosavedProject();
+    if (autosaved) {
+      console.log(`[RESTORE] Found autosaved project from ${new Date(autosaved.timestamp).toLocaleString()}`);
+      setAutosavedProject(autosaved);
+      setShowRestorePrompt(true);
+    }
     
     // Get debug info
     getDebugInfo().then(info => {
@@ -90,6 +110,14 @@ export default function App() {
         });
       });
   }, []);
+
+  // Auto-save project data when it changes
+  useEffect(() => {
+    // Don't auto-save if we haven't loaded yet or if there's no meaningful content
+    if (!prompt && scenes.length === 0) return;
+    
+    autoSaveProject(prompt, scenes, enableAI, audioConfig, sceneImages);
+  }, [prompt, scenes, enableAI, audioConfig, sceneImages]);
 
   const handleNarrationFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -314,6 +342,92 @@ export default function App() {
     console.log("Export cancellation requested");
   };
 
+  const handleRestoreProject = () => {
+    if (!autosavedProject) return;
+    
+    try {
+      const restored = applyProjectData(autosavedProject);
+      
+      // Apply restored data
+      setPrompt(restored.prompt);
+      setScenes(restored.scenes);
+      setEnableAI(restored.enableAI);
+      setAudioConfig(prev => ({ ...prev, ...restored.audioConfig }));
+      
+      // Load existing scene images for restored project
+      loadSceneImages(restored.scenes);
+      
+      // Check for missing assets
+      const missing = getMissingAssetsSummary(autosavedProject);
+      if (missing.length > 0) {
+        alert(`Project restored! Note: You'll need to re-upload:\n• ${missing.join('\n• ')}`);
+      } else {
+        console.log('[RESTORE] Project restored successfully');
+      }
+      
+      setShowRestorePrompt(false);
+      setAutosavedProject(null);
+    } catch (error) {
+      console.error('[RESTORE] Failed to restore project:', error);
+      alert('Failed to restore project. Starting fresh.');
+      setShowRestorePrompt(false);
+    }
+  };
+
+  const handleDismissRestore = () => {
+    setShowRestorePrompt(false);
+    setAutosavedProject(null);
+    clearAutosave();
+  };
+
+  const handleExportProject = () => {
+    try {
+      exportProject(prompt, scenes, enableAI, audioConfig, sceneImages);
+    } catch (error) {
+      console.error('[EXPORT] Export failed:', error);
+      alert('Failed to export project');
+    }
+  };
+
+  const handleImportProject = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.filmmagix';
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      
+      try {
+        const projectData = await importProject(file);
+        const restored = applyProjectData(projectData);
+        
+        // Apply imported data
+        setPrompt(restored.prompt);
+        setScenes(restored.scenes);
+        setEnableAI(restored.enableAI);
+        setAudioConfig(prev => ({ ...prev, ...restored.audioConfig }));
+        
+        // Clear existing scene images since they won't match
+        setSceneImages({});
+        setImageErrors({});
+        
+        // Check for missing assets
+        const missing = getMissingAssetsSummary(projectData);
+        if (missing.length > 0) {
+          alert(`Project imported! Note: You'll need to re-upload:\n• ${missing.join('\n• ')}`);
+        } else {
+          alert('Project imported successfully!');
+        }
+        
+        console.log('[IMPORT] Project imported successfully');
+      } catch (error) {
+        console.error('[IMPORT] Import failed:', error);
+        alert(error instanceof Error ? error.message : 'Failed to import project');
+      }
+    };
+    input.click();
+  };
+
   const onExportMP4 = async () => {
     setExporting(true);
     try {
@@ -404,6 +518,71 @@ export default function App() {
 
   return (
     <div style={{ padding: 24, fontFamily: "Inter, system-ui, Arial" }}>
+      {/* Restore Project Prompt */}
+      {showRestorePrompt && autosavedProject && (
+        <div style={{ 
+          position: 'fixed', 
+          top: 0, 
+          left: 0, 
+          right: 0, 
+          bottom: 0, 
+          background: 'rgba(0,0,0,0.5)', 
+          display: 'flex', 
+          alignItems: 'center', 
+          justifyContent: 'center', 
+          zIndex: 1000 
+        }}>
+          <div style={{ 
+            background: 'white', 
+            padding: 24, 
+            borderRadius: 8, 
+            maxWidth: 500, 
+            width: '90%',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+          }}>
+            <h3 style={{ margin: '0 0 16px 0', fontSize: 18 }}>Restore Last Project?</h3>
+            <p style={{ margin: '0 0 16px 0', fontSize: 14, lineHeight: 1.4 }}>
+              Found an autosaved project from{' '}
+              <strong>{new Date(autosavedProject.timestamp).toLocaleString()}</strong>
+            </p>
+            <p style={{ margin: '0 0 20px 0', fontSize: 13, color: '#666' }}>
+              Scenes: {autosavedProject.scenes.length} • 
+              Background Music: {AUDIO_TRACKS.find(t => t.id === autosavedProject.audioConfig.backgroundTrack)?.name || 'None'}
+              {autosavedProject.enableAI && ' • AI Images: Enabled'}
+            </p>
+            <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
+              <button
+                onClick={handleDismissRestore}
+                style={{
+                  padding: '8px 16px',
+                  border: '1px solid #ddd',
+                  background: 'white',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                  fontSize: 14
+                }}
+              >
+                Start Fresh
+              </button>
+              <button
+                onClick={handleRestoreProject}
+                style={{
+                  padding: '8px 16px',
+                  border: 'none',
+                  background: '#1677ff',
+                  color: 'white',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                  fontSize: 14
+                }}
+              >
+                Restore Project
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
       <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 16 }}>FilmMagix MVP</h1>
       
       {/* FFmpeg Status Indicator */}
@@ -496,6 +675,43 @@ export default function App() {
         >
           Generate
         </button>
+      </div>
+
+      {/* Project Management */}
+      <div style={{ marginBottom: 16, display: "flex", gap: 8, alignItems: "center" }}>
+        <span style={{ fontSize: 14, color: "#666" }}>Project:</span>
+        <button
+          onClick={handleExportProject}
+          disabled={!prompt && scenes.length === 0}
+          style={{
+            padding: "6px 12px",
+            borderRadius: 4,
+            background: (!prompt && scenes.length === 0) ? "#f5f5f5" : "#fff",
+            border: "1px solid #ddd",
+            color: (!prompt && scenes.length === 0) ? "#999" : "#333",
+            cursor: (!prompt && scenes.length === 0) ? "not-allowed" : "pointer",
+            fontSize: 13
+          }}
+        >
+          📤 Export Project
+        </button>
+        <button
+          onClick={handleImportProject}
+          style={{
+            padding: "6px 12px",
+            borderRadius: 4,
+            background: "#fff",
+            border: "1px solid #ddd",
+            color: "#333",
+            cursor: "pointer",
+            fontSize: 13
+          }}
+        >
+          📥 Import Project
+        </button>
+        <span style={{ fontSize: 12, color: "#888", fontStyle: "italic" }}>
+          (.filmmagix files - metadata only)
+        </span>
       </div>
 
       {/* Aspect Ratio Selection - HIDDEN (using landscape only) */}
