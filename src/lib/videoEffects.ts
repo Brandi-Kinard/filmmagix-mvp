@@ -13,53 +13,115 @@ export interface TintConfig {
 }
 
 /**
- * Generate FFmpeg Ken Burns effect filter with improved zoompan
+ * Generate FFmpeg Ken Burns effect filter with improved zoompan and clamping
  */
-export function createKenBurnsFilter(params: KenBurnsParams, frameRate = 30): string {
+export function createKenBurnsFilter(params: KenBurnsParams, frameRate = 30, imageAspectRatio?: number): string {
   const { zoomDirection, panDirection, duration } = params;
   const totalFrames = Math.round(duration * frameRate);
+  const targetAspectRatio = 1920 / 1080; // 16:9
   
-  // Ken Burns zoom parameters - more subtle for professional look
+  // GUARD-RAIL: Clamp zoom to prevent faces/text from drifting off-frame
   let zoomStart = 1.0;
-  let zoomEnd = 1.15; // Reduced zoom for smoother effect
+  let zoomEnd = 1.12; // Reduced from 1.15 for safer framing
   
   if (zoomDirection === 'out') {
-    zoomStart = 1.15;
+    zoomStart = 1.12;
     zoomEnd = 1.0;
   }
   
-  // Improved pan expressions for smoother movement
+  // GUARD-RAIL: Adjust pan amount based on image aspect ratio to prevent off-frame drift
+  let panAmount = 0.08; // Reduced from 0.1 for safer margins
+  
+  if (imageAspectRatio) {
+    const aspectDifference = Math.abs(imageAspectRatio - targetAspectRatio);
+    
+    // For extreme aspect ratios, reduce pan amount significantly
+    if (aspectDifference > 0.5) {
+      panAmount = 0.04; // Very conservative for extreme ratios
+      console.log(`[KEN BURNS] GUARD-RAIL: Extreme aspect ratio ${imageAspectRatio.toFixed(2)}, reduced pan to ${panAmount}`);
+    } else if (aspectDifference > 0.2) {
+      panAmount = 0.06; // Moderate reduction for moderate differences
+      console.log(`[KEN BURNS] GUARD-RAIL: Moderate aspect ratio difference, reduced pan to ${panAmount}`);
+    }
+  }
+  
+  // Improved pan expressions with clamping to keep content in frame
   let xExpression = 'iw/2-(iw/zoom/2)'; // Default center
   let yExpression = 'ih/2-(ih/zoom/2)'; // Default center
   
-  const panAmount = 0.1; // 10% pan range for subtle movement
+  // Calculate safe pan bounds to prevent content from going off-frame
+  const safeMargin = 0.05; // 5% margin from edges
   
   switch (panDirection) {
     case 'left-right':
-      // Smooth left to right pan
-      xExpression = `iw*${panAmount}+(iw*(1-2*${panAmount}))*(on-1)/${totalFrames}`;
+      // Clamped left to right pan with safe margins
+      xExpression = `max(iw*${safeMargin}, min(iw*(1-${safeMargin})-iw/zoom, iw*${panAmount}+(iw*(1-2*${panAmount}))*(on-1)/${totalFrames}))`;
       break;
     case 'right-left':
-      // Smooth right to left pan
-      xExpression = `iw*(1-${panAmount})-(iw*(1-2*${panAmount}))*(on-1)/${totalFrames}`;
+      // Clamped right to left pan with safe margins
+      xExpression = `max(iw*${safeMargin}, min(iw*(1-${safeMargin})-iw/zoom, iw*(1-${panAmount})-(iw*(1-2*${panAmount}))*(on-1)/${totalFrames}))`;
       break;
     case 'top-bottom':
-      // Smooth top to bottom pan
-      yExpression = `ih*${panAmount}+(ih*(1-2*${panAmount}))*(on-1)/${totalFrames}`;
+      // Clamped top to bottom pan with safe margins
+      yExpression = `max(ih*${safeMargin}, min(ih*(1-${safeMargin})-ih/zoom, ih*${panAmount}+(ih*(1-2*${panAmount}))*(on-1)/${totalFrames}))`;
       break;
     case 'bottom-top':
-      // Smooth bottom to top pan
-      yExpression = `ih*(1-${panAmount})-(ih*(1-2*${panAmount}))*(on-1)/${totalFrames}`;
+      // Clamped bottom to top pan with safe margins
+      yExpression = `max(ih*${safeMargin}, min(ih*(1-${safeMargin})-ih/zoom, ih*(1-${panAmount})-(ih*(1-2*${panAmount}))*(on-1)/${totalFrames}))`;
       break;
   }
   
-  // Create the zoompan filter with corrected syntax for FFmpeg 0.11.x
+  // Create the zoompan filter with clamping
   const filter = `zoompan=z='${zoomStart}+(${zoomEnd}-${zoomStart})*(on-1)/${totalFrames}':x='${xExpression}':y='${yExpression}':d=${totalFrames}:s=1920x1080`;
   
   console.log(`[KEN BURNS] ${zoomDirection} zoom, ${panDirection} pan, ${duration}s (${totalFrames} frames)`);
+  console.log(`[KEN BURNS] GUARD-RAIL: Pan amount ${panAmount}, zoom range ${zoomStart}-${zoomEnd}`);
   console.log(`[KEN BURNS] Filter: ${filter}`);
   
   return filter;
+}
+
+/**
+ * GUARD-RAIL: Handle extreme aspect ratios with pillarbox/letterbox and blurred edge extend
+ */
+export function createAspectRatioHandler(imageAspectRatio: number, targetWidth = 1920, targetHeight = 1080): string {
+  const targetAspectRatio = targetWidth / targetHeight;
+  const aspectDifference = Math.abs(imageAspectRatio - targetAspectRatio);
+  
+  // If aspect ratio is close enough, just scale normally
+  if (aspectDifference <= 0.2) {
+    return `scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight}`;
+  }
+  
+  console.log(`[ASPECT] GUARD-RAIL: Extreme aspect ratio ${imageAspectRatio.toFixed(2)} vs target ${targetAspectRatio.toFixed(2)}`);
+  
+  if (imageAspectRatio > targetAspectRatio) {
+    // Image is wider - add letterbox (black bars top/bottom) with blurred background
+    console.log(`[ASPECT] GUARD-RAIL: Applying letterbox with blurred background for wide image`);
+    return [
+      // Create blurred background
+      `split=2[bg][fg]`,
+      // Background: scale to fill, blur heavily
+      `[bg]scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight},gblur=15[blurred_bg]`,
+      // Foreground: scale to fit with aspect ratio preserved
+      `[fg]scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease[fitted]`,
+      // Overlay fitted image on blurred background
+      `[blurred_bg][fitted]overlay=(W-w)/2:(H-h)/2`
+    ].join(';');
+  } else {
+    // Image is taller - add pillarbox (black bars left/right) with blurred background
+    console.log(`[ASPECT] GUARD-RAIL: Applying pillarbox with blurred background for tall image`);
+    return [
+      // Create blurred background
+      `split=2[bg][fg]`,
+      // Background: scale to fill, blur heavily
+      `[bg]scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${targetWidth}:${targetHeight},gblur=15[blurred_bg]`,
+      // Foreground: scale to fit with aspect ratio preserved
+      `[fg]scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease[fitted]`,
+      // Overlay fitted image on blurred background
+      `[blurred_bg][fitted]overlay=(W-w)/2:(H-h)/2`
+    ].join(';');
+  }
 }
 
 /**

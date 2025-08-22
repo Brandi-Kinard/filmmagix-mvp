@@ -162,6 +162,11 @@ function findOptimalFontSize(
     console.warn(`[CANVAS] Text truncated to ${config.maxLines} lines at min font size ${fontSize}px`);
   }
   
+  // Add warning for text that couldn't fit within safe margins
+  if (fontSize <= config.minFontSize && lines.length === config.maxLines) {
+    console.warn(`[CANVAS] GUARD-RAIL: Text exceeded safe margins, reduced to ${fontSize}px and ${config.maxLines} lines`);
+  }
+  
   console.log(`[CANVAS] Optimal font size: ${fontSize}px, ${lines.length} lines`);
   return { fontSize, lines };
 }

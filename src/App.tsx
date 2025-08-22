@@ -63,6 +63,13 @@ export default function App() {
   const [transitionDuration, setTransitionDuration] = useState(0.6);
   // Audio permissions state - currently not used
   // const [audioPermissionsGranted] = useState(false);
+  
+  // PWA installation state
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [showInstallButton, setShowInstallButton] = useState(false);
+  const [isInstalled, setIsInstalled] = useState(false);
+  const [offlineToast, setOfflineToast] = useState(false);
+  const [exportDiagnostics, setExportDiagnostics] = useState<any>(null);
 
   // Load FFmpeg, Canvas font, and check for autosaved project
   useEffect(() => {
@@ -111,6 +118,60 @@ export default function App() {
           setDebugInfo({...info, lastError: error.message});
         });
       });
+  }, []);
+
+  // PWA installation and service worker setup
+  useEffect(() => {
+    // Check if already installed
+    if (window.matchMedia('(display-mode: standalone)').matches) {
+      setIsInstalled(true);
+    }
+
+    // Listen for beforeinstallprompt event
+    const handleBeforeInstallPrompt = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setShowInstallButton(true);
+    };
+
+    // Listen for app installed event
+    const handleAppInstalled = () => {
+      setIsInstalled(true);
+      setShowInstallButton(false);
+      setDeferredPrompt(null);
+    };
+
+    // Service worker message handler
+    const handleServiceWorkerMessage = (event: MessageEvent) => {
+      if (event.data && event.data.type === 'OFFLINE_NOTIFICATION') {
+        setOfflineToast(true);
+        setTimeout(() => setOfflineToast(false), 5000);
+      }
+    };
+
+    // Register service worker
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js')
+        .then((registration) => {
+          console.log('[PWA] Service Worker registered:', registration);
+        })
+        .catch((error) => {
+          console.log('[PWA] Service Worker registration failed:', error);
+        });
+
+      navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
+    }
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
+      }
+    };
   }, []);
 
   // Auto-save project data when it changes
@@ -258,6 +319,26 @@ export default function App() {
     }
   };
 
+  const handleInstallPWA = async () => {
+    if (!deferredPrompt) return;
+
+    try {
+      const result = await deferredPrompt.prompt();
+      console.log('[PWA] Install prompt result:', result);
+      
+      if (result.outcome === 'accepted') {
+        console.log('[PWA] User accepted the install prompt');
+      } else {
+        console.log('[PWA] User dismissed the install prompt');
+      }
+      
+      setDeferredPrompt(null);
+      setShowInstallButton(false);
+    } catch (error) {
+      console.error('[PWA] Install prompt failed:', error);
+    }
+  };
+
   const onExportStoryboard = async () => {
     if (scenes.length === 0) {
       alert("Please generate some scenes first!");
@@ -267,6 +348,9 @@ export default function App() {
     setExporting(true);
     setExportCancelled(false);
     setExportProgress({ current: 0, total: 0, stage: 'Starting export...' });
+    setExportDiagnostics(null); // Clear previous diagnostics
+    
+    const exportStartTime = Date.now();
     
     try {
       console.log(`Starting storyboard export with ${scenes.length} scenes...`);
@@ -310,6 +394,35 @@ export default function App() {
       });
       
       console.timeEnd("Storyboard Export");
+      const exportEndTime = Date.now();
+      const completionTimeMs = exportEndTime - exportStartTime;
+      
+      // GUARD-RAIL: Generate export diagnostics
+      const totalDuration = scenesForExport.reduce((sum, scene) => sum + scene.durationSec, 0);
+      const backgroundModes = scenesForExport.map((scene, i) => {
+        const sceneId = `scene-${i}`;
+        const hasUpload = sceneImages[sceneId];
+        if (hasUpload) return 'upload';
+        if (enableAI && scene.background.mode === 'ai') return 'ai';
+        return 'gradient';
+      });
+      
+      const diagnostics = {
+        sceneCount: scenesForExport.length,
+        totalDuration: `${totalDuration}s`,
+        backgroundModes: backgroundModes.map((mode, i) => `Scene ${i + 1}: ${mode}`),
+        audioTrack: audioConfig.backgroundTrack !== 'none' ? 
+          AUDIO_TRACKS.find(t => t.id === audioConfig.backgroundTrack)?.name || 'Unknown' : 
+          'None',
+        narration: audioConfig.includeNarration && audioConfig.narrationFile ? 
+          audioConfig.narrationFile.name : 'None',
+        completionTime: `${(completionTimeMs / 1000).toFixed(1)}s`,
+        fileSize: `${(videoBlob.size / (1024 * 1024)).toFixed(2)} MB`,
+        exportSuccess: true,
+        timestamp: new Date().toLocaleString()
+      };
+      
+      setExportDiagnostics(diagnostics);
       
       // Only download if not cancelled
       if (!exportCancelled) {
@@ -329,6 +442,39 @@ export default function App() {
       
     } catch (error) {
       console.error("Error exporting storyboard:", error);
+      
+      // GUARD-RAIL: Generate error diagnostics
+      const exportEndTime = Date.now();
+      const completionTimeMs = exportEndTime - exportStartTime;
+      
+      const errorDiagnostics = {
+        sceneCount: scenes.length,
+        totalDuration: `${scenes.reduce((sum, scene) => sum + scene.durationSec, 0)}s`,
+        backgroundModes: scenes.map((scene, i) => {
+          const sceneId = `scene-${i}`;
+          const hasUpload = sceneImages[sceneId];
+          if (hasUpload) return `Scene ${i + 1}: upload`;
+          if (enableAI && scene.background.mode === 'ai') return `Scene ${i + 1}: ai`;
+          return `Scene ${i + 1}: gradient`;
+        }),
+        audioTrack: audioConfig.backgroundTrack !== 'none' ? 
+          AUDIO_TRACKS.find(t => t.id === audioConfig.backgroundTrack)?.name || 'Unknown' : 
+          'None',
+        narration: audioConfig.includeNarration && audioConfig.narrationFile ? 
+          audioConfig.narrationFile.name : 'None',
+        completionTime: `${(completionTimeMs / 1000).toFixed(1)}s (failed)`,
+        fileSize: 'N/A',
+        exportSuccess: false,
+        errorMessage: error instanceof Error ? error.message : 'Unknown error',
+        failedStep: (error as any).step ? 
+          `${(error as any).step} (${exportProgress.stage})` : 
+          exportProgress.stage || 'Unknown step',
+        recoverable: (error as any).recoverable !== false,
+        timestamp: new Date().toLocaleString()
+      };
+      
+      setExportDiagnostics(errorDiagnostics);
+      
       let errorMessage = "Failed to export storyboard. ";
       if (error instanceof Error) {
         if (error.message.includes('cancelled')) {
@@ -523,6 +669,44 @@ export default function App() {
     }
   };
 
+  const onRunCaptionClippingTest = () => {
+    const extremeTexts = [
+      // Very long single sentence
+      "This is an extremely long sentence designed to test caption clipping and automatic font size reduction with multiple complex words and technical terminology that should challenge the text wrapping system with supercalifragilisticexpialidocious antidisestablishmentarianism pneumonoultramicroscopicsilicovolcanoconiosisparagraph.",
+      
+      // Multiple long words
+      "Antidisestablishmentarianism pseudopseudohypoparathyroidism floccinaucinihilipilification hippopotomonstrosesquippedaliophobia pneumonoultramicroscopicsilicovolcanoconiosischaracterization incomprehensibilities",
+      
+      // Repetitive content
+      "Testing testing testing testing testing testing testing testing testing testing testing testing testing testing testing testing testing testing testing testing testing testing testing testing testing testing testing testing testing testing testing",
+      
+      // Mixed content with numbers and symbols
+      "Breaking News 2024: Advanced AI systems processing 1,234,567,890 data points per second with machine learning algorithms (ML/AI) utilizing neural networks & deep learning frameworks including TensorFlow, PyTorch, and BERT transformers.",
+      
+      // Very short but wide words
+      "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"
+    ];
+    
+    console.log("📐 CAPTION CLIPPING TEST: Testing extreme text scenarios");
+    
+    // Replace current scenes with extreme test cases
+    const testScenes = extremeTexts.map((text, i) => ({
+      text,
+      keywords: ['test', 'clipping'],
+      durationSec: 6,
+      kind: i === 0 ? 'hook' : i === extremeTexts.length - 1 ? 'cta' : 'beat',
+      background: { mode: 'gradient' as BackgroundMode }
+    }));
+    
+    setScenes(testScenes);
+    setPrompt("Caption clipping test case - extreme text scenarios");
+    
+    console.log("📐 Test scenes generated. Export to test caption guard-rails:");
+    extremeTexts.forEach((text, i) => {
+      console.log(`  Scene ${i + 1}: ${text.substring(0, 80)}...`);
+    });
+  };
+
   return (
     <div style={{ padding: 24, fontFamily: "Inter, system-ui, Arial" }}>
       {/* Restore Project Prompt */}
@@ -589,8 +773,70 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Offline Toast */}
+      {offlineToast && (
+        <div style={{
+          position: 'fixed',
+          top: 20,
+          right: 20,
+          backgroundColor: '#ff9800',
+          color: 'white',
+          padding: '12px 20px',
+          borderRadius: 8,
+          boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+          zIndex: 1001,
+          fontSize: 14,
+          fontWeight: 500,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8
+        }}>
+          📡 You are currently offline. Some features may be limited.
+        </div>
+      )}
       
-      <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 16 }}>FilmMagix MVP</h1>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+        <h1 style={{ fontSize: 28, fontWeight: 700, margin: 0 }}>FilmMagix MVP</h1>
+        
+        {/* PWA Install Button */}
+        {showInstallButton && !isInstalled && (
+          <button
+            onClick={handleInstallPWA}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: '#007bff',
+              color: 'white',
+              border: 'none',
+              borderRadius: 6,
+              fontSize: 14,
+              fontWeight: 500,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8
+            }}
+          >
+            📱 Install FilmMagix
+          </button>
+        )}
+        
+        {isInstalled && (
+          <div style={{
+            padding: '8px 16px',
+            backgroundColor: '#e8f5e8',
+            color: '#2d5a2d',
+            borderRadius: 6,
+            fontSize: 14,
+            fontWeight: 500,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8
+          }}>
+            ✅ App Installed
+          </div>
+        )}
+      </div>
       
       {/* FFmpeg Status Indicator */}
       <div style={{ marginBottom: 16, padding: 8, fontSize: 14, borderRadius: 6, background: ffmpegReady ? "#e8f5e8" : ffmpegError ? "#ffe8e8" : "#fff3cd", color: ffmpegReady ? "#2d5a2d" : ffmpegError ? "#5a2d2d" : "#5a5a2d" }}>
@@ -1274,6 +1520,22 @@ export default function App() {
             >
               {exporting ? "Running..." : "🧪 Run Visual Smoke Test"}
             </button>
+            <button
+              onClick={onRunCaptionClippingTest}
+              disabled={exporting}
+              style={{ 
+                padding: "8px 12px", 
+                borderRadius: 6, 
+                background: "#9c27b0",
+                color: "#fff",
+                border: "none",
+                cursor: exporting ? "not-allowed" : "pointer",
+                fontSize: "14px",
+                opacity: exporting ? 0.5 : 1
+              }}
+            >
+              📐 Caption Clipping Test
+            </button>
           </div>
           
           {/* Export Progress Indicator */}
@@ -1304,6 +1566,130 @@ export default function App() {
                 {exportProgress.current} of {exportProgress.total} steps completed
                 {exportCancelled && " (Cancelling...)"}
               </div>
+            </div>
+          )}
+          
+          {/* GUARD-RAIL: Export Diagnostics Block */}
+          {exportDiagnostics && (
+            <div style={{ 
+              marginTop: 16, 
+              padding: 16, 
+              border: exportDiagnostics.exportSuccess ? "1px solid #52c41a" : "1px solid #ff4d4f", 
+              borderRadius: 6, 
+              background: exportDiagnostics.exportSuccess ? "#f6ffed" : "#fff2f0",
+              position: 'relative'
+            }}>
+              <div style={{ 
+                fontSize: 16, 
+                fontWeight: 600, 
+                marginBottom: 12,
+                color: exportDiagnostics.exportSuccess ? "#52c41a" : "#ff4d4f",
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8
+              }}>
+                {exportDiagnostics.exportSuccess ? "✅ Export Completed Successfully" : "❌ Export Failed"}
+                <span style={{ fontSize: 12, fontWeight: 400, color: "#666" }}>
+                  {exportDiagnostics.timestamp}
+                </span>
+              </div>
+              
+              <div style={{ 
+                display: 'grid', 
+                gridTemplateColumns: '1fr 1fr', 
+                gap: 16, 
+                fontSize: 13 
+              }}>
+                <div>
+                  <div style={{ fontWeight: 500, marginBottom: 8, color: "#333" }}>📊 Export Summary</div>
+                  <div style={{ marginBottom: 4 }}>
+                    <strong>Scene Count:</strong> {exportDiagnostics.sceneCount}
+                  </div>
+                  <div style={{ marginBottom: 4 }}>
+                    <strong>Total Duration:</strong> {exportDiagnostics.totalDuration}
+                  </div>
+                  <div style={{ marginBottom: 4 }}>
+                    <strong>Completion Time:</strong> {exportDiagnostics.completionTime}
+                  </div>
+                  <div style={{ marginBottom: 4 }}>
+                    <strong>File Size:</strong> {exportDiagnostics.fileSize}
+                  </div>
+                </div>
+                
+                <div>
+                  <div style={{ fontWeight: 500, marginBottom: 8, color: "#333" }}>🎬 Content Details</div>
+                  <div style={{ marginBottom: 4 }}>
+                    <strong>Audio Track:</strong> {exportDiagnostics.audioTrack}
+                  </div>
+                  <div style={{ marginBottom: 4 }}>
+                    <strong>Narration:</strong> {exportDiagnostics.narration}
+                  </div>
+                  <div style={{ marginBottom: 8 }}>
+                    <strong>Background Modes:</strong>
+                  </div>
+                  <div style={{ fontSize: 11, color: "#666", paddingLeft: 8 }}>
+                    {exportDiagnostics.backgroundModes.map((mode: string, i: number) => (
+                      <div key={i}>{mode}</div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              
+              {/* GUARD-RAIL: Error details and retry option */}
+              {!exportDiagnostics.exportSuccess && (
+                <div style={{ 
+                  marginTop: 16, 
+                  paddingTop: 12, 
+                  borderTop: "1px solid #ffccc7" 
+                }}>
+                  <div style={{ fontWeight: 500, marginBottom: 8, color: "#ff4d4f" }}>
+                    🔧 Error Details
+                  </div>
+                  <div style={{ fontSize: 12, marginBottom: 8 }}>
+                    <strong>Failed Step:</strong> {exportDiagnostics.failedStep}
+                  </div>
+                  <div style={{ fontSize: 12, marginBottom: 12, color: "#666" }}>
+                    <strong>Error:</strong> {exportDiagnostics.errorMessage}
+                  </div>
+                  
+                  <button
+                    onClick={onExportStoryboard}
+                    disabled={exporting || !exportDiagnostics.recoverable}
+                    style={{ 
+                      padding: "8px 16px", 
+                      borderRadius: 6, 
+                      background: (!exportDiagnostics.recoverable || exporting) ? "#999" : "#ff4d4f",
+                      color: "#fff",
+                      border: "none",
+                      cursor: (!exportDiagnostics.recoverable || exporting) ? "not-allowed" : "pointer",
+                      fontSize: 14,
+                      fontWeight: 500,
+                      opacity: (!exportDiagnostics.recoverable || exporting) ? 0.5 : 1
+                    }}
+                    title={!exportDiagnostics.recoverable ? "This error is not recoverable" : ""}
+                  >
+                    {exportDiagnostics.recoverable ? "🔄 Retry Export" : "❌ Not Recoverable"}
+                  </button>
+                </div>
+              )}
+              
+              <button
+                onClick={() => setExportDiagnostics(null)}
+                style={{
+                  position: 'absolute',
+                  top: 8,
+                  right: 8,
+                  background: 'none',
+                  border: 'none',
+                  fontSize: 16,
+                  cursor: 'pointer',
+                  color: '#999',
+                  padding: 4
+                }}
+                title="Close diagnostics"
+              >
+                ×
+              </button>
             </div>
           )}
         </div>

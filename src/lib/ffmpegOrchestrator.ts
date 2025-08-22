@@ -276,6 +276,12 @@ export interface ExportProgress {
   current: number;
   total: number;
   stage: string;
+  step?: string; // Specific step identifier for retry functionality
+}
+
+export interface ExportError extends Error {
+  step?: string;
+  recoverable?: boolean;
 }
 
 /**
@@ -357,7 +363,8 @@ export async function assembleStoryboard(
         onProgress({
           current: i,
           total: updatedScenes.length + 2, // +2 for concatenation and audio mixing
-          stage: `Generating scene ${i + 1} of ${updatedScenes.length}`
+          stage: `Generating scene ${i + 1} of ${updatedScenes.length}`,
+          step: `scene_${i}`
         });
       }
       const scene = updatedScenes[i];
@@ -490,12 +497,25 @@ export async function assembleStoryboard(
           if (backgroundFilename) {
             try { ffmpeg.FS('unlink', backgroundFilename); } catch (e) {}
           }
-          throw sceneError;
+          
+          // GUARD-RAIL: Create enhanced error with step info
+          const enhancedError = new Error(`Scene ${i + 1} generation failed: ${sceneError.message}`) as ExportError;
+          enhancedError.step = `scene_${i}`;
+          enhancedError.recoverable = true;
+          throw enhancedError;
         }
         
       } catch (sceneError) {
         log(`❌ Scene ${i + 1}: COMPLETE FAILURE - ${sceneError}`);
         log(`❌ Scene ${i + 1}: Command was: ${command.join(' ')}`);
+        
+        // GUARD-RAIL: Re-throw with step info if not already enhanced
+        if (!(sceneError as ExportError).step) {
+          const enhancedError = new Error(`Scene ${i + 1} processing failed: ${sceneError}`) as ExportError;
+          enhancedError.step = `scene_${i}`;
+          enhancedError.recoverable = true;
+          throw enhancedError;
+        }
         throw sceneError; // Stop processing if any scene fails
       }
     }
@@ -548,7 +568,8 @@ export async function assembleStoryboard(
       onProgress({
         current: updatedScenes.length,
         total: updatedScenes.length + 2,
-        stage: 'Creating crossfade transitions...'
+        stage: 'Creating crossfade transitions...',
+        step: 'transitions'
       });
     }
     
@@ -583,10 +604,18 @@ export async function assembleStoryboard(
         
         // ULTIMATE FALLBACK: Simple concat without transitions
         log('🔄 ULTIMATE FALLBACK: Simple concatenation without transitions...');
-        await createSimpleConcatVideo(ffmpeg, existingFiles);
-        
-        const ultimateData = ffmpeg.FS('readFile', 'storyboard.mp4');
-        log(`✓ Simple concatenation successful: ${Math.round(ultimateData.length / 1024)}KB`);
+        try {
+          await createSimpleConcatVideo(ffmpeg, existingFiles);
+          
+          const ultimateData = ffmpeg.FS('readFile', 'storyboard.mp4');
+          log(`✓ Simple concatenation successful: ${Math.round(ultimateData.length / 1024)}KB`);
+        } catch (ultimateError) {
+          // GUARD-RAIL: Even simple concat failed
+          const enhancedError = new Error(`All transition methods failed: ${ultimateError}`) as ExportError;
+          enhancedError.step = 'transitions';
+          enhancedError.recoverable = false;
+          throw enhancedError;
+        }
       }
     }
     
@@ -675,7 +704,8 @@ export async function assembleStoryboard(
           onProgress({
             current: updatedScenes.length + 1,
             total: updatedScenes.length + 2,
-            stage: 'Adding audio...'
+            stage: 'Adding audio...',
+            step: 'audio_mixing'
           });
         }
         
@@ -741,9 +771,32 @@ export async function assembleStoryboard(
           log(`🎤 No narration file provided`);
         }
         
+        // Prepare whoosh SFX if enabled
+        let whooshAudio = null;
+        if (audioConfig.whooshTransitions && existingFiles.length > 1) {
+          try {
+            log(`💨 Loading whoosh SFX for transitions`);
+            const whooshResponse = await fetch('/audio/whoosh-1.wav');
+            
+            if (whooshResponse.ok) {
+              const whooshBlob = await whooshResponse.blob();
+              const whooshBuffer = await whooshBlob.arrayBuffer();
+              const whooshBytes = new Uint8Array(whooshBuffer);
+              
+              ffmpeg.FS('writeFile', 'whoosh-1.wav', whooshBytes);
+              whooshAudio = 'whoosh-1.wav';
+              log(`💨 Whoosh SFX loaded: ${Math.round(whooshBytes.length / 1024)}KB`);
+            } else {
+              log(`❌ Whoosh SFX HTTP error: ${whooshResponse.status}`);
+            }
+          } catch (error) {
+            log(`❌ Failed to load whoosh SFX: ${error}`);
+          }
+        }
+        
         // Mix audio if we have any audio sources
-        if (backgroundMusic || narrationAudio) {
-          log(`🎵 Starting audio mix: BGM=${backgroundMusic || 'none'}, Narration=${narrationAudio || 'none'}`);
+        if (backgroundMusic || narrationAudio || whooshAudio) {
+          log(`🎵 Starting audio mix: BGM=${backgroundMusic || 'none'}, Narration=${narrationAudio || 'none'}, Whoosh=${whooshAudio || 'none'}`);
           
           // Save video-only first
           ffmpeg.FS('writeFile', 'video-only.mp4', data);
@@ -764,25 +817,53 @@ export async function assembleStoryboard(
             // Both background music and narration - MVP scope settings
             log(`🎵 Mixing background music with narration (MVP scope: 0.7 music, 1.0 narration, -3dB limiter)`);
             
-            mixCommand = [
-              '-i', 'video-only.mp4',
-              '-stream_loop', '-1',
-              '-i', backgroundMusic,
-              '-i', narrationAudio,
-              '-filter_complex',
-              // Music at 0.7 volume, narration at 1.0, with -3dB limiter to prevent clipping
-              '[1:a]volume=0.7,afade=t=in:ss=0:d=' + fadeTimes.fadeIn + ',afade=t=out:st=' + fadeTimes.fadeOutStart + ':d=' + fadeTimes.fadeOut + '[music];' +
-              '[2:a]volume=1.0,atrim=duration=' + totalDuration + '[narration];' +
-              '[music][narration]amix=inputs=2:duration=first,alimiter=limit=0.7:attack=1:release=50[final_audio]',
-              '-map', '0:v',
-              '-map', '[final_audio]',
-              '-c:v', 'copy',
-              '-c:a', 'aac',
-              '-b:a', '192k',
-              '-shortest',
-              '-y',
-              'final-with-audio.mp4'
-            ];
+            if (whooshAudio) {
+              // Include whoosh SFX with music and narration
+              const whooshTimestamps = generateWhooshTimestamps(updatedScenes.map(s => s.durationSec));
+              log(`💨 Adding whoosh SFX at timestamps: ${whooshTimestamps.join(', ')}`);
+              
+              mixCommand = [
+                '-i', 'video-only.mp4',
+                '-stream_loop', '-1',
+                '-i', backgroundMusic,
+                '-i', narrationAudio,
+                '-i', whooshAudio,
+                '-filter_complex',
+                // Create whoosh layer with multiple delays for each transition
+                '[3:a]' + whooshTimestamps.map((time, i) => `adelay=${Math.round(time * 1000)}|${Math.round(time * 1000)}`).join(',') + ',volume=0.3[whooshes];' +
+                '[1:a]volume=0.7,afade=t=in:ss=0:d=' + fadeTimes.fadeIn + ',afade=t=out:st=' + fadeTimes.fadeOutStart + ':d=' + fadeTimes.fadeOut + '[music];' +
+                '[2:a]volume=1.0,atrim=duration=' + totalDuration + '[narration];' +
+                '[music][narration][whooshes]amix=inputs=3:duration=first,alimiter=limit=0.7:attack=1:release=50[final_audio]',
+                '-map', '0:v',
+                '-map', '[final_audio]',
+                '-c:v', 'copy',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-shortest',
+                '-y',
+                'final-with-audio.mp4'
+              ];
+            } else {
+              mixCommand = [
+                '-i', 'video-only.mp4',
+                '-stream_loop', '-1',
+                '-i', backgroundMusic,
+                '-i', narrationAudio,
+                '-filter_complex',
+                // Music at 0.7 volume, narration at 1.0, with -3dB limiter to prevent clipping
+                '[1:a]volume=0.7,afade=t=in:ss=0:d=' + fadeTimes.fadeIn + ',afade=t=out:st=' + fadeTimes.fadeOutStart + ':d=' + fadeTimes.fadeOut + '[music];' +
+                '[2:a]volume=1.0,atrim=duration=' + totalDuration + '[narration];' +
+                '[music][narration]amix=inputs=2:duration=first,alimiter=limit=0.7:attack=1:release=50[final_audio]',
+                '-map', '0:v',
+                '-map', '[final_audio]',
+                '-c:v', 'copy',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-shortest',
+                '-y',
+                'final-with-audio.mp4'
+              ];
+            }
             
           } else if (backgroundMusic) {
             // Background music only
@@ -794,30 +875,103 @@ export async function assembleStoryboard(
             log(`🎵 Music volume: ${audioConfig.musicVolume}% -> ${musicGain.toFixed(2)}dB -> ${musicLinearGain.toFixed(3)} linear`);
             log(`🎵 Fade times: in=${fadeTimes.fadeIn}s, out=${fadeTimes.fadeOut}s @ ${fadeTimes.fadeOutStart}s`);
             
-            mixCommand = [
-              '-i', 'video-only.mp4',
-              '-stream_loop', '-1',
-              '-i', backgroundMusic,
-              '-filter_complex', 
-              `[1:a]volume=${musicLinearGain.toFixed(3)},afade=t=in:ss=0:d=${fadeTimes.fadeIn},afade=t=out:st=${fadeTimes.fadeOutStart}:d=${fadeTimes.fadeOut}[final_audio]`,
-              '-map', '0:v',
-              '-map', '[final_audio]',
-              '-c:v', 'copy',
-              '-c:a', 'aac',
-              '-b:a', '192k',
-              '-shortest',
-              '-y',
-              'final-with-audio.mp4'
-            ];
+            if (whooshAudio) {
+              // Include whoosh SFX with background music
+              const whooshTimestamps = generateWhooshTimestamps(updatedScenes.map(s => s.durationSec));
+              log(`💨 Adding whoosh SFX at timestamps: ${whooshTimestamps.join(', ')}`);
+              
+              mixCommand = [
+                '-i', 'video-only.mp4',
+                '-stream_loop', '-1',
+                '-i', backgroundMusic,
+                '-i', whooshAudio,
+                '-filter_complex',
+                // Create whoosh layer with multiple delays for each transition
+                '[2:a]' + whooshTimestamps.map((time, i) => `adelay=${Math.round(time * 1000)}|${Math.round(time * 1000)}`).join(',') + ',volume=0.4[whooshes];' +
+                `[1:a]volume=${musicLinearGain.toFixed(3)},afade=t=in:ss=0:d=${fadeTimes.fadeIn},afade=t=out:st=${fadeTimes.fadeOutStart}:d=${fadeTimes.fadeOut}[music];` +
+                '[music][whooshes]amix=inputs=2:duration=first,alimiter=limit=0.8[final_audio]',
+                '-map', '0:v',
+                '-map', '[final_audio]',
+                '-c:v', 'copy',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-shortest',
+                '-y',
+                'final-with-audio.mp4'
+              ];
+            } else {
+              mixCommand = [
+                '-i', 'video-only.mp4',
+                '-stream_loop', '-1',
+                '-i', backgroundMusic,
+                '-filter_complex', 
+                `[1:a]volume=${musicLinearGain.toFixed(3)},afade=t=in:ss=0:d=${fadeTimes.fadeIn},afade=t=out:st=${fadeTimes.fadeOutStart}:d=${fadeTimes.fadeOut}[final_audio]`,
+                '-map', '0:v',
+                '-map', '[final_audio]',
+                '-c:v', 'copy',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-shortest',
+                '-y',
+                'final-with-audio.mp4'
+              ];
+            }
             
           } else if (narrationAudio) {
             // Narration only
             log(`🎤 Adding narration only (stretched/trimmed to video duration)`);
             
+            if (whooshAudio) {
+              // Include whoosh SFX with narration
+              const whooshTimestamps = generateWhooshTimestamps(updatedScenes.map(s => s.durationSec));
+              log(`💨 Adding whoosh SFX at timestamps: ${whooshTimestamps.join(', ')}`);
+              
+              mixCommand = [
+                '-i', 'video-only.mp4',
+                '-i', narrationAudio,
+                '-i', whooshAudio,
+                '-filter_complex',
+                // Create whoosh layer with multiple delays for each transition
+                '[2:a]' + whooshTimestamps.map((time, i) => `adelay=${Math.round(time * 1000)}|${Math.round(time * 1000)}`).join(',') + ',volume=0.5[whooshes];' +
+                `[1:a]volume=1.0,atrim=duration=${totalDuration}[narration];` +
+                '[narration][whooshes]amix=inputs=2:duration=first,alimiter=limit=0.7[final_audio]',
+                '-map', '0:v',
+                '-map', '[final_audio]',
+                '-c:v', 'copy',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-shortest',
+                '-y',
+                'final-with-audio.mp4'
+              ];
+            } else {
+              mixCommand = [
+                '-i', 'video-only.mp4',
+                '-i', narrationAudio,
+                '-filter_complex', `[1:a]volume=1.0,atrim=duration=${totalDuration},alimiter=limit=0.7[final_audio]`,
+                '-map', '0:v',
+                '-map', '[final_audio]',
+                '-c:v', 'copy',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-shortest',
+                '-y',
+                'final-with-audio.mp4'
+              ];
+            }
+          } else if (whooshAudio) {
+            // Whoosh only (no background music or narration)
+            log(`💨 Adding whoosh SFX only`);
+            
+            const whooshTimestamps = generateWhooshTimestamps(updatedScenes.map(s => s.durationSec));
+            log(`💨 Adding whoosh SFX at timestamps: ${whooshTimestamps.join(', ')}`);
+            
             mixCommand = [
               '-i', 'video-only.mp4',
-              '-i', narrationAudio,
-              '-filter_complex', `[1:a]volume=1.0,atrim=duration=${totalDuration},alimiter=limit=0.7[final_audio]`,
+              '-i', whooshAudio,
+              '-filter_complex',
+              // Create whoosh layer with multiple delays for each transition
+              '[1:a]' + whooshTimestamps.map((time, i) => `adelay=${Math.round(time * 1000)}|${Math.round(time * 1000)}`).join(',') + ',volume=0.6[final_audio]',
               '-map', '0:v',
               '-map', '[final_audio]',
               '-c:v', 'copy',
@@ -848,6 +1002,7 @@ export async function assembleStoryboard(
               ffmpeg.FS('unlink', 'video-only.mp4');
               if (backgroundMusic) ffmpeg.FS('unlink', backgroundMusic);
               if (narrationAudio) ffmpeg.FS('unlink', narrationAudio);
+              if (whooshAudio) ffmpeg.FS('unlink', whooshAudio);
               ffmpeg.FS('unlink', 'final-with-audio.mp4');
               
               data = finalData;
