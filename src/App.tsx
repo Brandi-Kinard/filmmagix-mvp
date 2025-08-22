@@ -1,5 +1,6 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { assemblePlaceholder, assembleStoryboard, assembleVisualSmokeTest, getFFmpeg, getDebugInfo } from "./lib/ffmpegOrchestrator";
+import { clearGradientHistory } from "./lib/backgroundProvider";
 import type { Scene, ExportProgress } from "./lib/ffmpegOrchestrator";
 import { AUDIO_TRACKS, DEFAULT_AUDIO_CONFIG, type AudioConfig, validateNarrationFile } from "./lib/audioSystem";
 import { loadCanvasFont } from "./lib/canvasCaption";
@@ -59,6 +60,7 @@ export default function App() {
   const [enableAI, setEnableAI] = useState(false);
   const [showRestorePrompt, setShowRestorePrompt] = useState(false);
   const [autosavedProject, setAutosavedProject] = useState<ProjectData | null>(null);
+  const [transitionDuration, setTransitionDuration] = useState(0.6);
   // Audio permissions state - currently not used
   // const [audioPermissionsGranted] = useState(false);
 
@@ -242,6 +244,9 @@ export default function App() {
     if (!text) return;
     
     try {
+      // Clear gradient history for new project variety
+      clearGradientHistory();
+      
       const generatedScenes = buildScenes(text);
       setScenes(generatedScenes);
       console.log("Generated scenes:", generatedScenes);
@@ -296,6 +301,8 @@ export default function App() {
       
       const videoBlob = await assembleStoryboard(scenesForExport, { 
         audioConfig,
+        transitionDuration,
+        enableAI,
         onProgress: (progress: ExportProgress) => {
           setExportProgress(progress);
         },
@@ -813,6 +820,25 @@ export default function App() {
                   </div>
                 </div>
               )}
+
+              {/* Transition Duration Setting */}
+              <div style={{ marginTop: 12 }}>
+                <label style={{ display: "block", marginBottom: 4, fontSize: 14, fontWeight: 500 }}>
+                  Crossfade Duration: {transitionDuration}s
+                </label>
+                <input
+                  type="range"
+                  min="0.2"
+                  max="2.0"
+                  step="0.1"
+                  value={transitionDuration}
+                  onChange={(e) => setTransitionDuration(parseFloat(e.target.value))}
+                  style={{ width: "100%" }}
+                />
+                <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>
+                  Visible crossfades between scenes (0.2s - 2.0s)
+                </div>
+              </div>
             </div>
 
             {/* Audio Options */}
@@ -877,6 +903,69 @@ export default function App() {
               </div>
             )}
           </div>
+
+          {/* Background Debug Panel */}
+          {scenes.length > 0 && (
+            <div style={{ marginBottom: 16, padding: 12, border: "1px solid #ddd", borderRadius: 6, background: "#f9f9f9" }}>
+              <h4 style={{ margin: "0 0 8px 0", fontSize: 14, fontWeight: 600 }}>🔍 Background Sources Preview</h4>
+              <div style={{ fontSize: 11, display: 'grid', gridTemplateColumns: '40px 60px 120px 80px 60px 1fr', gap: 4, background: '#fff', padding: 8, borderRadius: 4 }}>
+                <div style={{ fontWeight: 600, color: '#666' }}>Scene</div>
+                <div style={{ fontWeight: 600, color: '#666' }}>Type</div>
+                <div style={{ fontWeight: 600, color: '#666' }}>Source</div>
+                <div style={{ fontWeight: 600, color: '#666' }}>Status</div>
+                <div style={{ fontWeight: 600, color: '#666' }}>Size</div>
+                <div style={{ fontWeight: 600, color: '#666' }}>Notes</div>
+                
+                {scenes.map((scene, i) => {
+                  const sceneId = `scene-${i}`;
+                  const hasUpload = sceneImages[sceneId];
+                  
+                  // Determine actual background type based on hierarchy
+                  let actualType = 'gradient';
+                  let source = 'Generated';
+                  let status = '✓';
+                  let notes = 'Default fallback';
+                  
+                  if (hasUpload) {
+                    actualType = 'upload';
+                    source = 'User file';
+                    status = '✓';
+                    notes = 'Custom image uploaded';
+                  } else if (enableAI && scene.background.mode === 'ai') {
+                    actualType = 'ai';
+                    source = 'Pollinations API';
+                    status = '⏳';
+                    notes = '6s timeout, fallback ready';
+                  } else {
+                    notes = enableAI ? 'AI disabled for scene' : 'AI globally disabled';
+                  }
+                  
+                  return (
+                    <React.Fragment key={i}>
+                      <div style={{ color: '#333' }}>{i + 1}</div>
+                      <div>
+                        <span style={{ 
+                          background: actualType === 'upload' ? '#4CAF50' : actualType === 'ai' ? '#FF9800' : '#9C27B0',
+                          color: 'white',
+                          padding: '1px 3px',
+                          borderRadius: 2,
+                          fontSize: 9
+                        }}>
+                          {actualType === 'upload' ? '📷' : actualType === 'ai' ? '🤖' : '🎨'}
+                        </span>
+                      </div>
+                      <div style={{ color: '#555', fontSize: 10 }}>{source}</div>
+                      <div>{status}</div>
+                      <div style={{ color: '#888', fontSize: 10 }}>
+                        {hasUpload ? 'Uploaded' : 'TBD'}
+                      </div>
+                      <div style={{ color: '#666', fontSize: 9 }}>{notes}</div>
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           
           {scenes.map((scene, i) => {
             const sceneId = `scene-${i}`;
@@ -943,6 +1032,44 @@ export default function App() {
                         {scene.background.mode === 'gradient' && 'Cinematic gradient from prompt'}
                         {scene.background.mode === 'ai' && 'AI-generated image (5s timeout)'}
                         {scene.background.mode === 'upload' && 'Use uploaded image above'}
+                      </div>
+                      
+                      {/* Background Status Badge */}
+                      <div style={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        gap: 4, 
+                        marginTop: 4,
+                        fontSize: 9,
+                        fontWeight: 500
+                      }}>
+                        <span style={{ color: '#666' }}>Will use:</span>
+                        {(() => {
+                          // Determine what will actually be used based on hierarchy
+                          const hasUpload = hasImage;
+                          if (hasUpload) {
+                            return <span style={{ 
+                              background: '#4CAF50', 
+                              color: 'white', 
+                              padding: '1px 4px', 
+                              borderRadius: 2 
+                            }}>📷 Upload</span>;
+                          } else if (enableAI && scene.background.mode === 'ai') {
+                            return <span style={{ 
+                              background: '#FF9800', 
+                              color: 'white', 
+                              padding: '1px 4px', 
+                              borderRadius: 2 
+                            }}>🤖 AI</span>;
+                          } else {
+                            return <span style={{ 
+                              background: '#9C27B0', 
+                              color: 'white', 
+                              padding: '1px 4px', 
+                              borderRadius: 2 
+                            }}>🎨 Gradient</span>;
+                          }
+                        })()}
                       </div>
                     </div>
                   </div>

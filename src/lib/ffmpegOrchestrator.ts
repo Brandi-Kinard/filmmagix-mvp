@@ -285,12 +285,16 @@ export async function assembleStoryboard(
   scenes: Scene[], 
   options?: { 
     audioConfig?: AudioConfig;
+    transitionDuration?: number;
+    enableAI?: boolean;
     onProgress?: (progress: ExportProgress) => void;
     checkCancelled?: () => boolean;
   }
 ): Promise<Blob> {
   try {
     const audioConfig = options?.audioConfig || { backgroundTrack: 'none', musicVolume: 65, whooshTransitions: false, includeNarration: false, narrationFile: null };
+    const transitionDuration = options?.transitionDuration || 0.6;
+    const enableAI = options?.enableAI || false;
     const onProgress = options?.onProgress;
     const checkCancelled = options?.checkCancelled;
     
@@ -379,20 +383,33 @@ export async function assembleStoryboard(
           scene.text,
           i,
           updatedScenes.map(s => s.text).join(' '),
+          enableAI,
+          `project-${Date.now()}`, // Simple project ID
           1920,
           1080
         );
         const backgroundTime = Date.now() - startTime;
         log(`🎨 Scene ${i + 1}: Background generated in ${backgroundTime}ms`);
         
-        if (backgroundResult.success && backgroundResult.pngBlob) {
+        if (backgroundResult.success && backgroundResult.jpegBlob) {
           // Write background image to FFmpeg filesystem
-          backgroundFilename = `bg-scene-${i}.png`;
-          const backgroundBuffer = await backgroundResult.pngBlob.arrayBuffer();
-          const backgroundBytes = new Uint8Array(backgroundBuffer);
-          ffmpeg.FS('writeFile', backgroundFilename, backgroundBytes);
+          backgroundFilename = `scene-${i}-bg.jpg`;
           
-          log(`🎨 Scene ${i + 1}: Background generated (${getBackgroundModeName(backgroundResult.mode)}) - ${Math.round(backgroundBytes.length / 1024)}KB`);
+          try {
+            const backgroundBuffer = await backgroundResult.jpegBlob.arrayBuffer();
+            const backgroundBytes = new Uint8Array(backgroundBuffer);
+            
+            if (backgroundBytes.length === 0) {
+              throw new Error('Empty image blob received');
+            }
+            
+            ffmpeg.FS('writeFile', backgroundFilename, backgroundBytes);
+            log(`🎨 Scene ${i + 1}: Background generated (${getBackgroundModeName(backgroundResult.actualMode)}) - ${Math.round(backgroundBytes.length / 1024)}KB`);
+            
+          } catch (fsError) {
+            log(`✗ Scene ${i + 1}: Failed to write background to FFmpeg FS: ${fsError}`);
+            throw new Error(`Failed to write background image for scene ${i + 1}: ${fsError}`);
+          }
           
           // Background image input
           ffmpegInputs = [
@@ -520,96 +537,56 @@ export async function assembleStoryboard(
       throw new Error('No valid scene segments were generated');
     }
     
-    // Create concat list file
-    log(`Creating concat list for ${existingFiles.length} segments...`);
-    const concatList = existingFiles.map(f => `file '${f}'`).join('\n');
-    const concatEncoder = new TextEncoder();
-    const concatBytes = concatEncoder.encode(concatList);
-    ffmpeg.FS('writeFile', 'clips.txt', concatBytes);
-    
-    log(`Concat list content:\n${concatList}`);
-    
-    // Check for cancellation before concatenation
+    // Check for cancellation before transitions
     if (checkCancelled && checkCancelled()) {
-      log(`❌ Export cancelled by user before concatenation`);
+      log(`❌ Export cancelled by user before transitions`);
       throw new Error('Export cancelled by user');
     }
     
-    // Report concatenation progress
+    // Report transitions progress
     if (onProgress) {
       onProgress({
         current: updatedScenes.length,
         total: updatedScenes.length + 2,
-        stage: 'Concatenating scenes...'
+        stage: 'Creating crossfade transitions...'
       });
     }
     
-    // Concatenate all clips with enhanced error handling
-    log('Concatenating scenes...');
+    // NEW CROSSFADE IMPLEMENTATION: Build xfade filter chain for visible transitions
+    log(`🎬 CROSSFADE TRANSITIONS: Using ${transitionDuration}s xfade between ${existingFiles.length} segments`);
+    
     try {
-      // First, verify the concat list file exists and is readable
-      try {
-        const concatFileContent = ffmpeg.FS('readFile', 'clips.txt');
-        log(`✓ Concat file verified: ${concatFileContent.length} bytes`);
-      } catch (concatFileError) {
-        log(`✗ Concat file error: ${concatFileError}`);
-        throw new Error('Concat list file not created properly');
-      }
-      
-      // BULLETPROOF APPROACH: Go back to proven working method
-      log('Using proven working concatenation approach...');
-      
-      const concatCommand = [
-        '-f', 'concat',
-        '-safe', '0',
-        '-i', 'clips.txt',
-        '-c', 'copy',
-        '-y',
-        'storyboard.mp4'
-      ];
-      
-      log(`[FFMPEG CONCAT] Command: ffmpeg ${concatCommand.join(' ')}`);
-      await ffmpeg.run(...concatCommand);
+      await createCrossfadeVideo(ffmpeg, existingFiles, updatedScenes, transitionDuration);
       
       // Verify output file was created
       try {
         const outputData = ffmpeg.FS('readFile', 'storyboard.mp4');
-        log(`✓ Storyboard created successfully: ${Math.round(outputData.length / 1024)}KB`);
+        log(`✓ Crossfade storyboard created successfully: ${Math.round(outputData.length / 1024)}KB`);
       } catch (readError) {
         log(`✗ Cannot read final storyboard file: ${readError}`);
-        throw new Error('Storyboard file was not created during concatenation');
+        throw new Error('Storyboard file was not created during crossfade processing');
       }
       
-    } catch (concatError) {
-      log(`✗ Re-encoding concatenation failed: ${concatError}`);
+    } catch (crossfadeError) {
+      log(`✗ Crossfade processing failed: ${crossfadeError}`);
       
-      // Fallback: try with copy codec
-      log('Trying fallback concatenation with copy codec...');
+      // ROBUST FALLBACK: Use fade-in/out + concat if xfade fails
+      log('🔄 FALLBACK: Using fade-in/out + concat method...');
       try {
-        await ffmpeg.run(
-          '-f', 'concat',
-          '-safe', '0',
-          '-i', 'clips.txt',
-          '-c', 'copy',
-          '-y',
-          'storyboard.mp4'
-        );
+        await createFadeTransitionsVideo(ffmpeg, existingFiles, transitionDuration);
         
-        // Verify fallback output
         const fallbackData = ffmpeg.FS('readFile', 'storyboard.mp4');
-        log(`✓ Fallback concatenation successful: ${Math.round(fallbackData.length / 1024)}KB`);
+        log(`✓ Fallback fade transitions successful: ${Math.round(fallbackData.length / 1024)}KB`);
         
       } catch (fallbackError) {
-        log(`✗ All concatenation methods failed: ${fallbackError}`);
+        log(`✗ Fallback transitions failed: ${fallbackError}`);
         
-        // Last resort: create a simple video from first segment
-        if (existingFiles.length > 0) {
-          log(`Using first segment as output: ${existingFiles[0]}`);
-          const firstSegmentData = ffmpeg.FS('readFile', existingFiles[0]);
-          ffmpeg.FS('writeFile', 'storyboard.mp4', firstSegmentData);
-        } else {
-          throw new Error('No segments available for final video');
-        }
+        // ULTIMATE FALLBACK: Simple concat without transitions
+        log('🔄 ULTIMATE FALLBACK: Simple concatenation without transitions...');
+        await createSimpleConcatVideo(ffmpeg, existingFiles);
+        
+        const ultimateData = ffmpeg.FS('readFile', 'storyboard.mp4');
+        log(`✓ Simple concatenation successful: ${Math.round(ultimateData.length / 1024)}KB`);
       }
     }
     
@@ -681,7 +658,15 @@ export async function assembleStoryboard(
     }
     
     // 🎵 AUDIO MIXING: Add background music and narration if specified
-    const totalDuration = updatedScenes.reduce((total, scene) => total + scene.durationSec, 0);
+    // Calculate total duration accounting for crossfade transitions
+    let totalDuration = updatedScenes.reduce((total, scene) => total + scene.durationSec, 0);
+    
+    // Subtract overlapping transition time for crossfades
+    if (existingFiles.length > 1) {
+      const totalTransitionOverlap = (existingFiles.length - 1) * transitionDuration;
+      totalDuration = Math.max(5, totalDuration - totalTransitionOverlap);
+      log(`🎵 Total duration adjusted for ${existingFiles.length - 1} crossfades: ${totalDuration}s (saved ${totalTransitionOverlap}s from overlaps)`);
+    }
     
     if ((audioConfig.backgroundTrack && audioConfig.backgroundTrack !== 'none') || narrationAudioBlob) {
       try {
@@ -890,12 +875,15 @@ export async function assembleStoryboard(
         // File might not exist
       }
     }
-    ffmpeg.FS('unlink', 'clips.txt');
-    ffmpeg.FS('unlink', 'storyboard.mp4');
-    try {
-      ffmpeg.FS('unlink', 'subtitles.vtt');
-    } catch (e) {
-      // Subtitle file might not exist
+    
+    // Clean up other temporary files (safe cleanup)
+    const tempFilesToClean = ['clips.txt', 'storyboard.mp4', 'subtitles.vtt', 'video-only.mp4', 'final-with-audio.mp4'];
+    for (const file of tempFilesToClean) {
+      try {
+        ffmpeg.FS('unlink', file);
+      } catch (e) {
+        // File might not exist, which is fine
+      }
     }
     
     // Report completion
@@ -922,4 +910,187 @@ export async function assembleStoryboard(
     log(`✗ Storyboard generation failed: ${error}`);
     throw error;
   }
+}
+
+/**
+ * Create crossfade video using xfade filter chain
+ */
+async function createCrossfadeVideo(
+  ffmpeg: any, 
+  segmentFiles: string[], 
+  scenes: Scene[], 
+  transitionDuration: number
+): Promise<void> {
+  log(`[XFADE] Building crossfade filter chain for ${segmentFiles.length} segments`);
+  
+  if (segmentFiles.length <= 1) {
+    // Single segment, just copy it
+    await ffmpeg.run('-i', segmentFiles[0], '-c', 'copy', '-y', 'storyboard.mp4');
+    return;
+  }
+  
+  // Calculate timing offsets for overlapping transitions
+  const segmentDurations = scenes.map(scene => Math.max(5, scene.durationSec || 5));
+  const offsetTable: Array<{ segment: number; start: number; duration: number }> = [];
+  
+  let currentOffset = 0;
+  for (let i = 0; i < segmentFiles.length; i++) {
+    const segmentDuration = segmentDurations[i];
+    offsetTable.push({
+      segment: i,
+      start: currentOffset,
+      duration: segmentDuration
+    });
+    
+    // Next segment starts earlier to create overlap for crossfade
+    if (i < segmentFiles.length - 1) {
+      currentOffset += segmentDuration - transitionDuration;
+    }
+  }
+  
+  // Debug: Log offset table
+  log(`[XFADE] Offset table for ${transitionDuration}s crossfades:`);
+  offsetTable.forEach(entry => {
+    log(`   Segment ${entry.segment}: start=${entry.start}s, duration=${entry.duration}s`);
+  });
+  
+  // Build FFmpeg inputs
+  const inputs: string[] = [];
+  for (const file of segmentFiles) {
+    inputs.push('-i', file);
+  }
+  
+  // Build xfade filter complex chain
+  const filterParts: string[] = [];
+  let currentLabel = '[0:v]';
+  
+  for (let i = 1; i < segmentFiles.length; i++) {
+    const fadeOffset = offsetTable[i].start;
+    const nextLabel = i === segmentFiles.length - 1 ? '' : `[v${i}]`;
+    
+    filterParts.push(
+      `${currentLabel}[${i}:v]xfade=transition=fade:duration=${transitionDuration}:offset=${fadeOffset}${nextLabel}`
+    );
+    
+    currentLabel = `[v${i}]`;
+  }
+  
+  const filterComplex = filterParts.join(';');
+  log(`[XFADE] Filter complex: ${filterComplex}`);
+  
+  // Execute FFmpeg command with xfade
+  const command = [
+    ...inputs,
+    '-filter_complex', filterComplex,
+    '-c:v', 'libx264',
+    '-pix_fmt', 'yuv420p',
+    '-y',
+    'storyboard.mp4'
+  ];
+  
+  log(`[XFADE] FFmpeg command: ffmpeg ${command.join(' ')}`);
+  await ffmpeg.run(...command);
+}
+
+/**
+ * Create transitions using fade-in/out + concat (fallback method)
+ */
+async function createFadeTransitionsVideo(
+  ffmpeg: any,
+  segmentFiles: string[],
+  transitionDuration: number
+): Promise<void> {
+  log(`[FADE] Creating fade transitions with ${transitionDuration}s duration`);
+  
+  if (segmentFiles.length <= 1) {
+    // Single segment, just copy it
+    await ffmpeg.run('-i', segmentFiles[0], '-c', 'copy', '-y', 'storyboard.mp4');
+    return;
+  }
+  
+  // Process each segment to add fade-out (except last) and fade-in (except first)
+  const processedFiles: string[] = [];
+  
+  for (let i = 0; i < segmentFiles.length; i++) {
+    const inputFile = segmentFiles[i];
+    const outputFile = `faded-${String(i).padStart(3, '0')}.mp4`;
+    processedFiles.push(outputFile);
+    
+    const filters: string[] = [];
+    
+    // Add fade-in for all segments except first
+    if (i > 0) {
+      filters.push(`fade=t=in:st=0:d=${transitionDuration}`);
+    }
+    
+    // Add fade-out for all segments except last
+    if (i < segmentFiles.length - 1) {
+      filters.push(`fade=t=out:st=${5 - transitionDuration}:d=${transitionDuration}`);
+    }
+    
+    if (filters.length > 0) {
+      const filterString = filters.join(',');
+      await ffmpeg.run(
+        '-i', inputFile,
+        '-vf', filterString,
+        '-c:v', 'libx264',
+        '-pix_fmt', 'yuv420p',
+        '-y', outputFile
+      );
+      log(`[FADE] Processed segment ${i + 1} with filters: ${filterString}`);
+    } else {
+      // No filters needed, just copy
+      await ffmpeg.run('-i', inputFile, '-c', 'copy', '-y', outputFile);
+      log(`[FADE] Copied segment ${i + 1} without filters`);
+    }
+  }
+  
+  // Create concat list for processed files
+  const concatList = processedFiles.map(f => `file '${f}'`).join('\n');
+  const concatEncoder = new TextEncoder();
+  const concatBytes = concatEncoder.encode(concatList);
+  ffmpeg.FS('writeFile', 'fade-clips.txt', concatBytes);
+  
+  // Concatenate with overlap to create smooth transitions
+  await ffmpeg.run(
+    '-f', 'concat',
+    '-safe', '0',
+    '-i', 'fade-clips.txt',
+    '-c', 'copy',
+    '-y',
+    'storyboard.mp4'
+  );
+  
+  log(`[FADE] Successfully created fade transitions video`);
+}
+
+/**
+ * Simple concatenation without transitions (ultimate fallback)
+ */
+async function createSimpleConcatVideo(ffmpeg: any, segmentFiles: string[]): Promise<void> {
+  log(`[CONCAT] Simple concatenation of ${segmentFiles.length} segments`);
+  
+  if (segmentFiles.length === 1) {
+    // Single segment, just copy it
+    await ffmpeg.run('-i', segmentFiles[0], '-c', 'copy', '-y', 'storyboard.mp4');
+    return;
+  }
+  
+  // Create concat list file
+  const concatList = segmentFiles.map(f => `file '${f}'`).join('\n');
+  const concatEncoder = new TextEncoder();
+  const concatBytes = concatEncoder.encode(concatList);
+  ffmpeg.FS('writeFile', 'simple-clips.txt', concatBytes);
+  
+  // Simple concat without re-encoding
+  await ffmpeg.run(
+    '-f', 'concat',
+    '-safe', '0',
+    '-i', 'simple-clips.txt',
+    '-c', 'copy',
+    '-y',
+    'storyboard.mp4'
+  );
+  
+  log(`[CONCAT] Simple concatenation completed`);
 }
