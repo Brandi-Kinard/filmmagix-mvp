@@ -3,7 +3,8 @@
 
 declare global {
   interface Window {
-    FFmpeg: any;
+    createFFmpeg: any;
+    FFmpegReady: boolean;
   }
 }
 
@@ -36,19 +37,19 @@ async function loadFFmpegGlobal(): Promise<any> {
   try {
     log('Checking for global FFmpeg...');
     
-    // Wait for global FFmpeg to be available
+    // Wait for global createFFmpeg to be available
     let attempts = 0;
-    while (!window.FFmpeg && attempts < 20) {
+    while (!window.FFmpegReady && attempts < 20) {
       await new Promise(resolve => setTimeout(resolve, 100));
       attempts++;
     }
     
-    if (!window.FFmpeg) {
+    if (!window.FFmpegReady || !window.createFFmpeg) {
       throw new Error('FFmpeg global not found after 2 seconds');
     }
     
     log('Creating FFmpeg instance from global...');
-    const { createFFmpeg } = window.FFmpeg;
+    const createFFmpeg = window.createFFmpeg;
     
     const ffmpeg = createFFmpeg({
       log: true,
@@ -142,13 +143,10 @@ export async function getDebugInfo() {
 }
 
 // Import helpers
-import { computeCaptionLayout, pickBgColor, ASPECT_CONFIGS, layoutForAspect, type AspectKey, type CaptionLayoutResult } from './textLayout';
-import { getSceneImage, extractKeywords, getTintForKeywords, getTintForSceneType, generateKenBurnsParams, type SceneImage, type KenBurnsParams, type TintConfig } from './imageSource';
-import { createCompleteFilter, createTextOverlayFilter, createImprovedTextOverlay, createKenBurnsFilter, createSimplifiedFilter } from './videoEffects';
-import { fetchRelevantSceneImage, type FetchedImage } from './relevantImageSource';
-import { buildVisualQueries } from './visualQuery';
 import { logAudioConfig, calculateFadeTimes, generateWhooshTimestamps, volumeToDb, AUDIO_TRACKS, type AudioConfig, validateNarrationFile } from './audioSystem';
 import { renderCaptionPNG, loadCanvasFont } from './canvasCaption';
+import { provideSceneBackground, getBackgroundModeName, type BackgroundMode, type SceneBackground } from './backgroundProvider';
+import { createKenBurnsFilter, type KenBurnsParams, type TintConfig } from './videoEffects';
 // MVP Scope: Live TTS imports removed
 
 // Scene type definition
@@ -157,9 +155,37 @@ export type Scene = {
   keywords: string[];
   durationSec: number;
   kind: "hook" | "beat" | "cta";
-  userImage?: string; // Base64 image data from user upload
-  userImageFilename?: string; // Original filename for logging
+  background: SceneBackground;
 };
+
+/**
+ * Generate Ken Burns parameters for a scene
+ */
+function generateKenBurnsParams(durationSeconds: number): KenBurnsParams {
+  const zoomDirections: ('in' | 'out')[] = ['in', 'out'];
+  const panDirections: ('left-right' | 'right-left' | 'top-bottom' | 'bottom-top')[] = [
+    'left-right', 'right-left', 'top-bottom', 'bottom-top'
+  ];
+  
+  return {
+    zoomDirection: zoomDirections[Math.floor(Math.random() * zoomDirections.length)],
+    panDirection: panDirections[Math.floor(Math.random() * panDirections.length)],
+    duration: durationSeconds
+  };
+}
+
+/**
+ * Generate tint configuration for a scene
+ */
+function generateTintConfig(sceneType: 'hook' | 'beat' | 'cta'): TintConfig {
+  const tints = {
+    hook: { color: 'rgba(255, 69, 0, 0.15)', theme: 'warm-energy', keywords: ['hook', 'attention'] },
+    beat: { color: 'rgba(30, 144, 255, 0.12)', theme: 'cool-narrative', keywords: ['story', 'flow'] },
+    cta: { color: 'rgba(50, 205, 50, 0.18)', theme: 'action-green', keywords: ['action', 'call'] }
+  };
+  
+  return tints[sceneType];
+}
 
 // Font loading now handled by canvasCaption.ts
 
@@ -244,19 +270,32 @@ fix_bounds=1[final]`.replace(/\n/g, '');
 
 
 /**
+ * Progress callback for export operations
+ */
+export interface ExportProgress {
+  current: number;
+  total: number;
+  stage: string;
+}
+
+/**
  * Generate a full storyboard video from scenes
  */
 export async function assembleStoryboard(
   scenes: Scene[], 
-  options?: { crossfade?: boolean; aspectRatio?: AspectKey; audioConfig?: AudioConfig }
+  options?: { 
+    audioConfig?: AudioConfig;
+    onProgress?: (progress: ExportProgress) => void;
+    checkCancelled?: () => boolean;
+  }
 ): Promise<Blob> {
   try {
-    const aspectRatio = options?.aspectRatio || 'portrait';
-    const aspectConfig = ASPECT_CONFIGS[aspectRatio];
-    const audioConfig = options?.audioConfig || { backgroundTrack: 'none', musicVolume: 65, autoDuck: false, whooshTransitions: false, voiceoverEnabled: false, voiceId: '', voiceRate: 1.0, syncScenesToVO: true };
+    const audioConfig = options?.audioConfig || { backgroundTrack: 'none', musicVolume: 65, whooshTransitions: false, includeNarration: false, narrationFile: null };
+    const onProgress = options?.onProgress;
+    const checkCancelled = options?.checkCancelled;
     
     log(`Starting storyboard assembly with ${scenes.length} scenes...`);
-    log(`Using aspect ratio: ${aspectRatio} (${aspectConfig.width}×${aspectConfig.height})`);
+    log(`Using landscape aspect ratio: 1920×1080`);
     
     // MVP Scope: No live voiceover generation
     let updatedScenes = scenes;
@@ -303,6 +342,20 @@ export async function assembleStoryboard(
     
     // Now generate scene videos with PNG caption overlays
     for (let i = 0; i < updatedScenes.length; i++) {
+      // Check for cancellation
+      if (checkCancelled && checkCancelled()) {
+        log(`❌ Export cancelled by user at scene ${i + 1}`);
+        throw new Error('Export cancelled by user');
+      }
+      
+      // Report progress
+      if (onProgress) {
+        onProgress({
+          current: i,
+          total: updatedScenes.length + 2, // +2 for concatenation and audio mixing
+          stage: `Generating scene ${i + 1} of ${updatedScenes.length}`
+        });
+      }
       const scene = updatedScenes[i];
       const sceneDuration = Math.max(5, scene.durationSec || 5);
       const segmentFile = `seg-${String(i).padStart(3, '0')}.mp4`;
@@ -313,29 +366,35 @@ export async function assembleStoryboard(
       let command: string[] = [];
       
       try {
-        // Check if user has uploaded a custom image for this scene
+        // Generate background using new background provider
         let backgroundFilename: string | null = null;
         let ffmpegInputs: string[] = [];
         let filterInputSource: string;
         
-        if (scene.userImage) {
-          // User has uploaded a custom image
-          log(`📷 Scene ${i + 1}: Using user-uploaded image: ${scene.userImageFilename || 'custom.jpg'}`);
+        log(`🎨 Scene ${i + 1}: Generating background (mode: ${scene.background.mode})`);
+        
+        const startTime = Date.now();
+        const backgroundResult = await provideSceneBackground(
+          scene.background,
+          scene.text,
+          i,
+          updatedScenes.map(s => s.text).join(' '),
+          1920,
+          1080
+        );
+        const backgroundTime = Date.now() - startTime;
+        log(`🎨 Scene ${i + 1}: Background generated in ${backgroundTime}ms`);
+        
+        if (backgroundResult.success && backgroundResult.pngBlob) {
+          // Write background image to FFmpeg filesystem
+          backgroundFilename = `bg-scene-${i}.png`;
+          const backgroundBuffer = await backgroundResult.pngBlob.arrayBuffer();
+          const backgroundBytes = new Uint8Array(backgroundBuffer);
+          ffmpeg.FS('writeFile', backgroundFilename, backgroundBytes);
           
-          // Convert base64 to blob
-          const base64Parts = scene.userImage.split(',');
-          const binaryString = atob(base64Parts[1]);
-          const bytes = new Uint8Array(binaryString.length);
-          for (let j = 0; j < binaryString.length; j++) {
-            bytes[j] = binaryString.charCodeAt(j);
-          }
+          log(`🎨 Scene ${i + 1}: Background generated (${getBackgroundModeName(backgroundResult.mode)}) - ${Math.round(backgroundBytes.length / 1024)}KB`);
           
-          // Write user image to FFmpeg filesystem
-          backgroundFilename = `user-scene-${i}.jpg`;
-          ffmpeg.FS('writeFile', backgroundFilename, bytes);
-          log(`📷 Scene ${i + 1}: User image written as ${backgroundFilename} (${Math.round(bytes.length / 1024)}KB)`);
-          
-          // User image input
+          // Background image input
           ffmpegInputs = [
             '-loop', '1',
             '-t', String(sceneDuration),
@@ -343,15 +402,11 @@ export async function assembleStoryboard(
           ];
           filterInputSource = '[0:v]';
         } else {
-          // Use generated colored background
-          const colors = ['blue', 'green', 'purple', 'orange', 'red', 'cyan', 'yellow', 'magenta'];
-          const color = colors[i % colors.length];
-          log(`🎨 Scene ${i + 1}: Using generated ${color} background`);
-          
-          // Color source input
+          // Fallback to solid color if background generation fails
+          log(`⚠️ Scene ${i + 1}: Background generation failed, using fallback color`);
           ffmpegInputs = [
             '-f', 'lavfi',
-            '-i', `color=c=${color}:s=1920x1080:d=${sceneDuration}:r=30`
+            '-i', `color=c=blue:s=1920x1080:d=${sceneDuration}:r=30`
           ];
           filterInputSource = '[0:v]';
         }
@@ -368,11 +423,17 @@ export async function assembleStoryboard(
         ffmpeg.FS('writeFile', captionFilename, captionBytes);
         log(`🖼️ Scene ${i + 1}: Caption PNG written as ${captionFilename} (${Math.round(captionBytes.length / 1024)}KB)`);
         
-        // Create scene with PNG caption overlay (no drawtext!)
+        // SIMPLIFIED: Just basic overlay for now to debug the hang
+        log(`🎬 Scene ${i + 1}: Using simplified overlay for debugging`);
+        
+        // Simple scale + caption overlay
+        const filterComplex = `${filterInputSource}scale=1920:1080[scaled];[scaled][1:v]overlay=0:0[final]`;
+        
+        // Create scene with Ken Burns, tint, and PNG caption overlay
         const overlayCommand = [
           ...ffmpegInputs,  // Background input (either user image or color)
           '-i', captionFilename,  // Caption PNG overlay
-          '-filter_complex', `${filterInputSource}[1:v]overlay=0:0[final]`,
+          '-filter_complex', filterComplex,
           '-map', '[final]',
           '-c:v', 'libx264',
           '-pix_fmt', 'yuv420p',
@@ -383,10 +444,13 @@ export async function assembleStoryboard(
         
         command = overlayCommand;
         
-        log(`🔧 Scene ${i + 1}: Overlaying PNG caption from ${captionFilename}`);
+        log(`🔧 Scene ${i + 1}: Starting FFmpeg execution with command: ${command.join(' ')}`);
         
         try {
+          const ffmpegStart = Date.now();
           await ffmpeg.run(...command);
+          const ffmpegTime = Date.now() - ffmpegStart;
+          log(`🔧 Scene ${i + 1}: FFmpeg completed in ${ffmpegTime}ms`);
           
           // Verify the file was created and is valid size
           const data = ffmpeg.FS('readFile', segmentFile);
@@ -396,7 +460,7 @@ export async function assembleStoryboard(
             throw new Error('Generated file too small, scene generation failed');
           }
           
-          // Clean up caption PNG and user image if present
+          // Clean up caption PNG and background image if present
           ffmpeg.FS('unlink', captionFilename);
           if (backgroundFilename) {
             try { ffmpeg.FS('unlink', backgroundFilename); } catch (e) {}
@@ -464,6 +528,21 @@ export async function assembleStoryboard(
     ffmpeg.FS('writeFile', 'clips.txt', concatBytes);
     
     log(`Concat list content:\n${concatList}`);
+    
+    // Check for cancellation before concatenation
+    if (checkCancelled && checkCancelled()) {
+      log(`❌ Export cancelled by user before concatenation`);
+      throw new Error('Export cancelled by user');
+    }
+    
+    // Report concatenation progress
+    if (onProgress) {
+      onProgress({
+        current: updatedScenes.length,
+        total: updatedScenes.length + 2,
+        stage: 'Concatenating scenes...'
+      });
+    }
     
     // Concatenate all clips with enhanced error handling
     log('Concatenating scenes...');
@@ -606,6 +685,15 @@ export async function assembleStoryboard(
     
     if ((audioConfig.backgroundTrack && audioConfig.backgroundTrack !== 'none') || narrationAudioBlob) {
       try {
+        // Report audio mixing progress
+        if (onProgress) {
+          onProgress({
+            current: updatedScenes.length + 1,
+            total: updatedScenes.length + 2,
+            stage: 'Adding audio...'
+          });
+        }
+        
         log(`🎵 Processing audio: BGM=${audioConfig.backgroundTrack}, Narration=${narrationAudioBlob ? 'enabled' : 'disabled'}`);
         logAudioConfig(audioConfig, totalDuration);
         
@@ -808,6 +896,15 @@ export async function assembleStoryboard(
       ffmpeg.FS('unlink', 'subtitles.vtt');
     } catch (e) {
       // Subtitle file might not exist
+    }
+    
+    // Report completion
+    if (onProgress) {
+      onProgress({
+        current: updatedScenes.length + 2,
+        total: updatedScenes.length + 2,
+        stage: 'Export complete!'
+      });
     }
     
     log(`✓ Cinematic storyboard generated: ${Math.round(data.length / 1024)}KB`);

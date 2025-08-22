@@ -1,6 +1,16 @@
 // Video effects for Ken Burns and tinting
 
-import type { KenBurnsParams, TintConfig } from './imageSource';
+export interface KenBurnsParams {
+  zoomDirection: 'in' | 'out';
+  panDirection: 'left-right' | 'right-left' | 'top-bottom' | 'bottom-top';
+  duration: number; // in seconds
+}
+
+export interface TintConfig {
+  color: string; // rgba format
+  keywords: string[];
+  theme: string;
+}
 
 /**
  * Generate FFmpeg Ken Burns effect filter with improved zoompan

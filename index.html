@@ -5,8 +5,17 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FilmMagix MVP</title>
-    <!-- Load FFmpeg from CDN - bypasses all module issues -->
+    <!-- Load FFmpeg 0.11.6 from CDN globally -->
     <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+    <script>
+      // Ensure FFmpeg is available globally
+      window.FFmpegReady = false;
+      if (typeof FFmpeg !== 'undefined' && FFmpeg.createFFmpeg) {
+        window.createFFmpeg = FFmpeg.createFFmpeg;
+        window.FFmpegReady = true;
+        console.log('[FFmpeg] v0.11.6 loaded successfully from CDN');
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

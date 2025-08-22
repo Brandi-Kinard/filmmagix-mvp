@@ -1,12 +1,11 @@
 import { useState, useEffect } from "react";
 import { assemblePlaceholder, assembleStoryboard, assembleVisualSmokeTest, getFFmpeg, getDebugInfo } from "./lib/ffmpegOrchestrator";
-import type { Scene } from "./lib/ffmpegOrchestrator";
-import type { AspectKey } from "./lib/textLayout";
-import { ASPECT_CONFIGS } from "./lib/textLayout";
+import type { Scene, ExportProgress } from "./lib/ffmpegOrchestrator";
 import { AUDIO_TRACKS, DEFAULT_AUDIO_CONFIG, type AudioConfig, validateNarrationFile } from "./lib/audioSystem";
 import { loadCanvasFont } from "./lib/canvasCaption";
 import { validateImageFile, downscaleImage, blobToBase64 } from "./lib/imageProcessor";
 import { storeSceneImage, getSceneImage, deleteSceneImage } from "./lib/imageStorage";
+import { getBackgroundModeName, type BackgroundMode, type SceneBackground } from "./lib/backgroundProvider";
 
 // Scene type is now imported from orchestrator
 
@@ -24,6 +23,7 @@ function buildScenes(raw: string): Scene[] {
       keywords: [],
       durationSec,
       kind,
+      background: { mode: 'gradient' as BackgroundMode } // Default to gradient
     };
   });
 
@@ -33,8 +33,10 @@ function buildScenes(raw: string): Scene[] {
 export default function App() {
   const [prompt, setPrompt] = useState("");
   const [scenes, setScenes] = useState<Scene[]>([]);
-  const [aspectRatio] = useState<AspectKey>('landscape'); // Fixed to landscape only
+  const [aspectRatio] = useState('landscape'); // Fixed to landscape only
   const [exporting, setExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState({ current: 0, total: 0, stage: '' });
+  const [exportCancelled, setExportCancelled] = useState(false);
   const [ffmpegReady, setFfmpegReady] = useState(false);
   const [ffmpegError, setFfmpegError] = useState<string | null>(null);
   const [debugInfo, setDebugInfo] = useState<any>(null);
@@ -229,49 +231,86 @@ export default function App() {
     }
     
     setExporting(true);
+    setExportCancelled(false);
+    setExportProgress({ current: 0, total: 0, stage: 'Starting export...' });
     
     try {
       console.log(`Starting storyboard export with ${scenes.length} scenes...`);
       console.time("Storyboard Export");
       
-      // Merge scene images into scenes for export
-      const scenesWithImages = scenes.map((scene, i) => {
+      // Process scenes for export - merge uploaded images into background config
+      const scenesForExport = scenes.map((scene, i) => {
         const sceneId = `scene-${i}`;
         const userImage = sceneImages[sceneId];
-        return {
-          ...scene,
-          userImage,
-          userImageFilename: userImage ? `custom-scene-${i}.jpg` : undefined
-        };
+        
+        if (userImage && scene.background.mode === 'upload') {
+          // Convert base64 to blob for upload mode
+          const base64Parts = userImage.split(',');
+          const binaryString = atob(base64Parts[1]);
+          const bytes = new Uint8Array(binaryString.length);
+          for (let j = 0; j < binaryString.length; j++) {
+            bytes[j] = binaryString.charCodeAt(j);
+          }
+          const blob = new Blob([bytes], { type: 'image/jpeg' });
+          
+          return {
+            ...scene,
+            background: {
+              ...scene.background,
+              uploadedBlob: blob
+            }
+          };
+        }
+        
+        return scene;
       });
       
-      const videoBlob = await assembleStoryboard(scenesWithImages, { aspectRatio, audioConfig });
+      const videoBlob = await assembleStoryboard(scenesForExport, { 
+        audioConfig,
+        onProgress: (progress: ExportProgress) => {
+          setExportProgress(progress);
+        },
+        checkCancelled: () => exportCancelled
+      });
       
       console.timeEnd("Storyboard Export");
       
-      // Download the video
-      const url = URL.createObjectURL(videoBlob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'filmmagix-storyboard.mp4';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      
-      console.log("✓ Storyboard export completed!");
-      console.log("File size:", videoBlob.size, "bytes");
+      // Only download if not cancelled
+      if (!exportCancelled) {
+        // Download the video
+        const url = URL.createObjectURL(videoBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'filmmagix-storyboard.mp4';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+        console.log("✓ Storyboard export completed!");
+        console.log("File size:", videoBlob.size, "bytes");
+      }
       
     } catch (error) {
       console.error("Error exporting storyboard:", error);
       let errorMessage = "Failed to export storyboard. ";
       if (error instanceof Error) {
+        if (error.message.includes('cancelled')) {
+          console.log("Export was cancelled by user");
+          return; // Don't show error for cancellation
+        }
         errorMessage += error.message;
       }
       alert(errorMessage);
     } finally {
       setExporting(false);
+      setExportProgress({ current: 0, total: 0, stage: '' });
     }
+  };
+
+  const onCancelExport = () => {
+    setExportCancelled(true);
+    console.log("Export cancellation requested");
   };
 
   const onExportMP4 = async () => {
@@ -408,7 +447,7 @@ export default function App() {
             <strong>Caption System Info:</strong>
           </div>
           <div>Mode: CANVAS PNG OVERLAYS (NEW)</div>
-          <div>Frame Size: {ASPECT_CONFIGS[aspectRatio].width}×{ASPECT_CONFIGS[aspectRatio].height}</div>
+          <div>Frame Size: 1920×1080 (landscape)</div>
           <div style={{ color: "#00aa00", fontWeight: "bold" }}>🎯 REPLACES DRAWTEXT FILTER</div>
           <div>Font: Noto Sans Regular (Web Font)</div>
           <div>Text Position: Bottom third with safe margins</div>
@@ -422,12 +461,7 @@ export default function App() {
               {debugInfo.sceneMetrics.map((scene: any, idx: number) => (
                 <div key={idx} style={{ marginTop: 6, padding: 6, background: "#f0f0f0", borderRadius: 4 }}>
                   <div><strong>Scene {scene.scene}:</strong></div>
-                  <div>📸 Image: {scene.imageSource} 
-                    {scene.imageSource === 'ai-generated' && scene.generationTime && 
-                      ` (generated in ${scene.generationTime}ms)`}
-                    {scene.imageSource === 'unsplash' && ' (Unsplash API)'}
-                    {scene.imageSource === 'fallback' && ' (Local fallback)'}
-                  </div>
+                  <div>📸 Background: {scene.imageSource || 'Generated'}</div>
                   {scene.aiPrompt && (
                     <div>🤖 AI Prompt: {scene.aiPrompt.substring(0, 100)}...</div>
                   )}
@@ -625,8 +659,41 @@ export default function App() {
                         {scene.durationSec}s
                       </span>
                     </div>
-                    <div style={{ fontSize: 14, lineHeight: 1.4 }}>
+                    <div style={{ fontSize: 14, lineHeight: 1.4, marginBottom: 12 }}>
                       {scene.text}
+                    </div>
+                    
+                    {/* Background Mode Selector */}
+                    <div style={{ marginTop: 8 }}>
+                      <label style={{ display: "block", marginBottom: 4, fontSize: 12, fontWeight: 500, color: '#666' }}>
+                        Background:
+                      </label>
+                      <select
+                        value={scene.background.mode}
+                        onChange={(e) => {
+                          const newMode = e.target.value as BackgroundMode;
+                          const updatedScenes = scenes.map((s, idx) => 
+                            idx === i ? { ...s, background: { mode: newMode } } : s
+                          );
+                          setScenes(updatedScenes);
+                        }}
+                        style={{ 
+                          width: "100%", 
+                          padding: "4px 6px", 
+                          borderRadius: 4, 
+                          border: "1px solid #ccc",
+                          fontSize: 12
+                        }}
+                      >
+                        <option value="gradient">🎨 Gradient (default)</option>
+                        <option value="ai">🤖 AI Generated</option>
+                        <option value="upload">📷 Custom Upload</option>
+                      </select>
+                      <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>
+                        {scene.background.mode === 'gradient' && 'Cinematic gradient from prompt'}
+                        {scene.background.mode === 'ai' && 'AI-generated image (5s timeout)'}
+                        {scene.background.mode === 'upload' && 'Use uploaded image above'}
+                      </div>
                     </div>
                   </div>
                   
@@ -634,20 +701,21 @@ export default function App() {
                   <div style={{ 
                     width: 120, 
                     height: 80,
-                    border: hasImage ? 'none' : '2px dashed #ccc',
+                    border: hasImage ? 'none' : scene.background.mode === 'upload' ? '2px dashed #4CAF50' : '2px dashed #ccc',
                     borderRadius: 6,
                     display: 'flex',
                     flexDirection: 'column',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    cursor: 'pointer',
-                    background: hasImage ? 'transparent' : '#fafafa',
+                    cursor: scene.background.mode === 'upload' ? 'pointer' : 'default',
+                    background: hasImage ? 'transparent' : scene.background.mode === 'upload' ? '#f8fff8' : '#f5f5f5',
                     position: 'relative',
-                    overflow: 'hidden'
+                    overflow: 'hidden',
+                    opacity: scene.background.mode === 'upload' ? 1 : 0.5
                   }}
-                  onDragOver={handleSceneDragOver}
-                  onDrop={(e) => handleSceneDrop(e, i)}
-                  onClick={() => {
+                  onDragOver={scene.background.mode === 'upload' ? handleSceneDragOver : undefined}
+                  onDrop={scene.background.mode === 'upload' ? (e) => handleSceneDrop(e, i) : undefined}
+                  onClick={scene.background.mode === 'upload' ? () => {
                     const input = document.createElement('input');
                     input.type = 'file';
                     input.accept = 'image/*';
@@ -656,7 +724,7 @@ export default function App() {
                       if (file) handleSceneImageUpload(i, file);
                     };
                     input.click();
-                  }}
+                  } : undefined}
                   >
                     {hasImage ? (
                       <>
@@ -698,8 +766,16 @@ export default function App() {
                       </>
                     ) : (
                       <>
-                        <div style={{ fontSize: 24, color: '#ccc', marginBottom: 4 }}>📷</div>
-                        <div style={{ fontSize: 10, color: '#999', textAlign: 'center' }}>Click or drop image</div>
+                        <div style={{ fontSize: 24, color: scene.background.mode === 'upload' ? '#4CAF50' : '#ccc', marginBottom: 4 }}>
+                          {scene.background.mode === 'gradient' && '🎨'}
+                          {scene.background.mode === 'ai' && '🤖'}
+                          {scene.background.mode === 'upload' && '📷'}
+                        </div>
+                        <div style={{ fontSize: 10, color: '#999', textAlign: 'center' }}>
+                          {scene.background.mode === 'gradient' && 'Gradient auto'}
+                          {scene.background.mode === 'ai' && 'AI generated'}
+                          {scene.background.mode === 'upload' && 'Click or drop image'}
+                        </div>
                       </>
                     )}
                   </div>
@@ -719,8 +795,19 @@ export default function App() {
                   </div>
                 )}
                 
-                {/* Image Status */}
-                {hasImage && (
+                {/* Background Status */}
+                {scene.background.mode !== 'upload' && (
+                  <div style={{ 
+                    fontSize: 11, 
+                    color: '#666', 
+                    marginTop: 8,
+                    fontWeight: 500
+                  }}>
+                    {scene.background.mode === 'gradient' && '🎨 Will generate gradient background'}
+                    {scene.background.mode === 'ai' && '🤖 Will generate AI background'}
+                  </div>
+                )}
+                {scene.background.mode === 'upload' && hasImage && (
                   <div style={{ 
                     fontSize: 11, 
                     color: '#4CAF50', 
@@ -728,6 +815,16 @@ export default function App() {
                     fontWeight: 500
                   }}>
                     ✅ Custom image uploaded
+                  </div>
+                )}
+                {scene.background.mode === 'upload' && !hasImage && (
+                  <div style={{ 
+                    fontSize: 11, 
+                    color: '#ff9800', 
+                    marginTop: 8,
+                    fontWeight: 500
+                  }}>
+                    ⚠️ Upload mode requires custom image
                   </div>
                 )}
               </div>
@@ -752,6 +849,24 @@ export default function App() {
             >
               {exporting ? "Exporting..." : "Export Storyboard MP4"}
             </button>
+            
+            {/* Cancel button when exporting */}
+            {exporting && (
+              <button
+                onClick={onCancelExport}
+                style={{ 
+                  padding: "8px 12px", 
+                  borderRadius: 6, 
+                  background: "#ff4d4f",
+                  color: "#fff",
+                  border: "none",
+                  cursor: "pointer",
+                  fontSize: "14px"
+                }}
+              >
+                Cancel
+              </button>
+            )}
             <button
               onClick={onExportMP4}
               disabled={exporting}
@@ -783,6 +898,37 @@ export default function App() {
               {exporting ? "Running..." : "🧪 Run Visual Smoke Test"}
             </button>
           </div>
+          
+          {/* Export Progress Indicator */}
+          {exporting && exportProgress.total > 0 && (
+            <div style={{ marginTop: 16, padding: 12, border: "1px solid #ddd", borderRadius: 6, background: "#f9f9f9" }}>
+              <div style={{ fontSize: 14, marginBottom: 8, fontWeight: 500 }}>
+                {exportProgress.stage}
+              </div>
+              
+              {/* Progress Bar */}
+              <div style={{ 
+                width: "100%", 
+                height: 8, 
+                background: "#e0e0e0", 
+                borderRadius: 4, 
+                overflow: "hidden",
+                marginBottom: 4
+              }}>
+                <div style={{ 
+                  height: "100%", 
+                  background: exportCancelled ? "#ff4d4f" : "#52c41a",
+                  width: `${Math.round((exportProgress.current / exportProgress.total) * 100)}%`,
+                  transition: "width 0.3s ease"
+                }} />
+              </div>
+              
+              <div style={{ fontSize: 12, color: "#666" }}>
+                {exportProgress.current} of {exportProgress.total} steps completed
+                {exportCancelled && " (Cancelling...)"}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
