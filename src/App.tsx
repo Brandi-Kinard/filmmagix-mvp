@@ -46,6 +46,7 @@ export default function App() {
   const [narrationError, setNarrationError] = useState<string>('');
   const [sceneImages, setSceneImages] = useState<{[sceneId: string]: string}>({});
   const [imageErrors, setImageErrors] = useState<{[sceneId: string]: string}>({});
+  const [enableAI, setEnableAI] = useState(false);
   // Audio permissions state - currently not used
   // const [audioPermissionsGranted] = useState(false);
 
@@ -628,6 +629,39 @@ export default function App() {
             <h3 style={{ margin: 0 }}>Scenes ({scenes.length}):</h3>
           </div>
           
+          {/* AI Toggle */}
+          <div style={{ marginBottom: 16, padding: 12, border: "1px solid #ddd", borderRadius: 6, background: "#f9f9f9" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
+              <input
+                type="checkbox"
+                checked={enableAI}
+                onChange={(e) => {
+                  const newEnableAI = e.target.checked;
+                  setEnableAI(newEnableAI);
+                  
+                  // If disabling AI, revert any AI scenes to gradient
+                  if (!newEnableAI) {
+                    const updatedScenes = scenes.map(scene => 
+                      scene.background.mode === 'ai' 
+                        ? { ...scene, background: { mode: 'gradient' as BackgroundMode } }
+                        : scene
+                    );
+                    setScenes(updatedScenes);
+                  }
+                }}
+              />
+              <span style={{ fontWeight: 500 }}>Enable AI images (experimental)</span>
+              <span style={{ fontSize: 12, color: "#666", fontStyle: "italic" }}>
+                - 5s timeout, auto-fallback to gradients
+              </span>
+            </label>
+            {enableAI && (
+              <div style={{ fontSize: 12, color: "#888", marginTop: 4, marginLeft: 20 }}>
+                AI mode will be available in the background selector for each scene
+              </div>
+            )}
+          </div>
+          
           {scenes.map((scene, i) => {
             const sceneId = `scene-${i}`;
             const hasImage = sceneImages[sceneId];
@@ -686,7 +720,7 @@ export default function App() {
                         }}
                       >
                         <option value="gradient">🎨 Gradient (default)</option>
-                        <option value="ai">🤖 AI Generated</option>
+                        {enableAI && <option value="ai">🤖 AI Generated (experimental)</option>}
                         <option value="upload">📷 Custom Upload</option>
                       </select>
                       <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>

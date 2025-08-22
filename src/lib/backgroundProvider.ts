@@ -71,14 +71,72 @@ async function generateGradient(prompt: string, sceneIndex: number, width: numbe
 }
 
 /**
+ * Resize image to exact target dimensions using canvas
+ */
+async function resizeImageToTarget(imageBlob: Blob, targetWidth: number, targetHeight: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(imageBlob);
+    
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      
+      // Create canvas at exact target size
+      const canvas = document.createElement('canvas');
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      const ctx = canvas.getContext('2d')!;
+      
+      // Calculate scaling to cover the entire canvas (like background-size: cover)
+      const scale = Math.max(targetWidth / img.width, targetHeight / img.height);
+      const scaledWidth = img.width * scale;
+      const scaledHeight = img.height * scale;
+      
+      // Center the scaled image
+      const x = (targetWidth - scaledWidth) / 2;
+      const y = (targetHeight - scaledHeight) / 2;
+      
+      // Draw scaled and centered image
+      ctx.drawImage(img, x, y, scaledWidth, scaledHeight);
+      
+      // Convert to PNG blob
+      canvas.toBlob((blob) => {
+        if (blob) {
+          resolve(blob);
+        } else {
+          reject(new Error('Failed to resize image'));
+        }
+      }, 'image/png', 1.0);
+    };
+    
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Failed to load image for resizing'));
+    };
+    
+    img.src = url;
+  });
+}
+
+/**
  * Generate AI image using keyless provider (Pollinations)
  * 5s total timeout, fallback to gradient on failure
  */
-async function generateAIImage(prompt: string, sceneIndex: number, width: number, height: number): Promise<BackgroundResult> {
+async function generateAIImage(prompt: string, sceneIndex: number, width: number, height: number, globalContext = ''): Promise<BackgroundResult> {
   try {
-    // Simple, direct prompt for better results
-    const enhancedPrompt = `cinematic photo of ${prompt}, high quality, no text`;
+    // Enhanced prompt building with style adjectives and context
+    const styleAdjectives = ['cinematic', 'soft lighting', 'professional photography', 'film grain'];
+    const paletteHints = ['warm tones', 'muted colors', 'cinematic color grading'];
+    
+    const selectedStyle = styleAdjectives[sceneIndex % styleAdjectives.length];
+    const selectedPalette = paletteHints[sceneIndex % paletteHints.length];
+    
+    // Build comprehensive prompt
+    const contextHint = globalContext ? `, ${globalContext}` : '';
+    const enhancedPrompt = `${selectedStyle} photo of ${prompt}${contextHint}, ${selectedPalette}, high quality, no text, professional composition`;
     const encodedPrompt = encodeURIComponent(enhancedPrompt);
+    
+    console.log(`[AI] Enhanced prompt for scene ${sceneIndex}: "${enhancedPrompt}"`);
     
     // Deterministic seed from prompt + scene
     let seed = 42;
@@ -102,34 +160,53 @@ async function generateAIImage(prompt: string, sceneIndex: number, width: number
     clearTimeout(timeoutId);
     
     if (!response.ok) {
-      throw new Error(`AI generation failed: ${response.status}`);
+      const errorMsg = `HTTP ${response.status} ${response.statusText}`;
+      console.log(`[AI] Request failed: ${errorMsg}`);
+      throw new Error(`AI generation failed: ${errorMsg}`);
     }
     
     const blob = await response.blob();
     
     // Validate it's an image
     if (!blob.type.startsWith('image/')) {
-      throw new Error('Invalid response type from AI provider');
+      const typeError = `Invalid response type: ${blob.type}`;
+      console.log(`[AI] ${typeError}`);
+      throw new Error(`Invalid response type from AI provider: ${blob.type}`);
     }
     
-    console.log(`[AI] Generated image for scene ${sceneIndex} (${Math.round(blob.size / 1024)}KB)`);
+    console.log(`[AI] Downloaded image for scene ${sceneIndex} (${Math.round(blob.size / 1024)}KB)`);
+    
+    // Resize image in browser to exact output dimensions
+    const resizedBlob = await resizeImageToTarget(blob, width, height);
+    console.log(`[AI] Resized to ${width}x${height} (${Math.round(resizedBlob.size / 1024)}KB)`);
     
     return {
       success: true,
-      pngBlob: blob,
+      pngBlob: resizedBlob,
       mode: 'ai'
     };
     
   } catch (error) {
-    console.warn(`[AI] Generation failed for scene ${sceneIndex}, falling back to gradient:`, error);
+    // Enhanced error logging for debugging
+    let errorReason = 'Unknown error';
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      errorReason = 'Network/CORS error';
+    } else if (error instanceof DOMException && error.name === 'AbortError') {
+      errorReason = 'Timeout after 5s';
+    } else if (error instanceof Error) {
+      errorReason = error.message;
+    }
     
-    // Fallback to gradient
+    console.log(`[AI] Generation failed for scene ${sceneIndex}: ${errorReason}`);
+    console.log(`[AI] Falling back to gradient for scene ${sceneIndex}`);
+    
+    // Fallback to gradient - never block export
     const gradientBlob = await generateGradient(prompt, sceneIndex, width, height);
     return {
       success: true,
       pngBlob: gradientBlob,
       mode: 'gradient',
-      error: `AI failed: ${error}, used gradient fallback`
+      error: `AI failed (${errorReason}), used gradient fallback`
     };
   }
 }
@@ -225,7 +302,7 @@ export async function provideSceneBackground(
       
     case 'ai':
       // AI is off by default, explicitly chosen
-      return await generateAIImage(sceneText, sceneIndex, width, height);
+      return await generateAIImage(sceneText, sceneIndex, width, height, projectPrompt);
       
     case 'gradient':
     default:
